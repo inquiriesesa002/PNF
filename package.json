@@ -1,0 +1,46 @@
+{
+  "name": "package.json",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "node index.js",
+    "start": "node index.js",
+    "deploy": "firebase deploy --only functions:api"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.11.0",
+    "bcrypt": "^5.1.1",
+    "body-parser": "^2.2.0",
+    "cloudinary": "^1.41.3",
+    "cors": "^2.8.5",
+    "crypto": "^1.0.1",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "firebase": "^10.6.0",
+    "firebase-admin": "^11.11.0",
+    "firebase-function": "^1.4.73",
+    "hbs": "^4.2.0",
+    "jsonwebtoken": "^9.0.2",
+    "jwt-decode": "^4.0.0",
+    "mongodb": "^6.1.0",
+    "mongoose": "^7.8.7",
+    "multer": "^1.4.5-lts.1",
+    "multer-storage-cloudinary": "^4.0.0",
+    "node-fetch": "^3.3.2",
+    "nodemailer": "^6.10.1",
+    "nodemon": "^3.1.10",
+    "nutritionix-api": "^1.0.4",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1",
+    "streamifier": "^0.1.1",
+    "stripe": "^14.25.0"
+  },
+  "engines": {
+    "node": "20.x"
+  },
+  "keywords": [],
+  "description": ""
+}
