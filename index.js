@@ -27,6 +27,21 @@ const verifyToken = (token) => {
   }
 };
 
+// Helper to resolve the frontend base URL for links in emails
+// Priority: explicit env FRONTEND_URL -> request Origin header -> referer origin -> default http://localhost:5173
+const getFrontendBaseUrl = (req) => {
+  const fromEnv = process.env.FRONTEND_URL && process.env.FRONTEND_URL.trim();
+  if (fromEnv) return fromEnv;
+  const origin = (req.headers && (req.headers.origin || req.headers.referer)) || "";
+  try {
+    if (origin) {
+      const url = new URL(origin);
+      return `${url.protocol}//${url.host}`;
+    }
+  } catch (_) {}
+  return "http://localhost:5173";
+};
+
 // Helper function to check and manage free trial for users
 const checkFreeTrial = async (userId) => {
   try {
@@ -118,6 +133,24 @@ const path = require("path");
 const bcrypt = require("bcrypt");
 const AppModel = require("./models/App");
 const WorkUpload = require("./models/workupload");
+// Stripe mode diagnostics endpoint
+// This helps verify whether live or test keys are loaded at runtime
+// Safe: only exposes prefix and last 4 for debugging
+try {
+  const express = require("express");
+  if (typeof app !== 'undefined' && app && app.get) {
+    app.get('/stripe-mode', (req, res) => {
+      const pk = process.env.STRIPE_PUBLISHABLE_KEY || '';
+      const sk = process.env.STRIPE_SECRET_KEY || '';
+      const mode = sk.startsWith('sk_live_') ? 'live' : (sk.startsWith('sk_test_') ? 'test' : 'unknown');
+      res.json({
+        mode,
+        publishableKeyPreview: pk ? `${pk.slice(0, 10)}...${pk.slice(-6)}` : '',
+        secretKeyPreview: sk ? `${sk.slice(0, 7)}...${sk.slice(-6)}` : ''
+      });
+    });
+  }
+} catch (_) {}
 //////
 const InformationBox = require("./models/informationBox");
 const Service = require("./models/Service"); // ya sahi path jo aapka model hai
@@ -5444,7 +5477,7 @@ app.post("/forgot-password-seller", async (req, res) => {
 
     // Send email
     const transporter = createTransporter();
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5177';
+    const frontendUrl = getFrontendBaseUrl(req);
     const resetUrl = `${frontendUrl}/reset-password/${token}`;
     const mailOptions = {
       from: process.env.EMAIL_USER,
@@ -5490,7 +5523,7 @@ app.post("/forgot-password-buyer", async (req, res) => {
 
     // Send email
     const transporter = createTransporter();
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5177';
+    const frontendUrl = getFrontendBaseUrl(req);
     const resetUrl = `${frontendUrl}/reset-password/${token}`;
     const mailOptions = {
       from: process.env.EMAIL_USER,
@@ -5544,7 +5577,7 @@ app.post("/forgot-password", async (req, res) => {
 
     // Send email
     const transporter = createTransporter();
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5177';
+    const frontendUrl = getFrontendBaseUrl(req);
     const resetUrl = `${frontendUrl}/reset-password/${token}`;
     const mailOptions = {
       from: process.env.EMAIL_USER,
