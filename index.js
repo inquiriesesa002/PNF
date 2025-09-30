@@ -30,8 +30,13 @@ const verifyToken = (token) => {
 // Helper to resolve the frontend base URL for links in emails
 // Priority: explicit env FRONTEND_URL -> request Origin header -> referer origin -> default http://localhost:5173
 const getFrontendBaseUrl = (req) => {
-  const fromEnv = process.env.FRONTEND_URL && process.env.FRONTEND_URL.trim();
-  if (fromEnv) return fromEnv;
+  let fromEnv = process.env.FRONTEND_URL && process.env.FRONTEND_URL.trim();
+  if (fromEnv) {
+    // Normalize double slashes and trailing slash
+    fromEnv = fromEnv.replace(/\/{2,}/g, '/');
+    if (fromEnv.endsWith('/')) fromEnv = fromEnv.slice(0, -1);
+    return fromEnv;
+  }
   const origin = (req.headers && (req.headers.origin || req.headers.referer)) || "";
   try {
     if (origin) {
@@ -392,11 +397,11 @@ app.post("/test-send-email", async (req, res) => {
 
     const { htmlTemplate, textTemplate } = createVerificationEmailTemplate("Test User", "123456", email);
 
-    const attachments = (process.env.APP_LOGO_INLINE || "").toLowerCase() === "true" ? [
+    const attachments = (process.env.APP_logopnf_INLINE || "").toLowerCase() === "true" ? [
       {
-        filename: "logo.png",
-        path: path.join(__dirname, "../src/assets/logo.png"),
-        cid: "app-logo"
+        filename: "logopnf.png",
+        path: path.join(__dirname, "../src/assets/logopnf.png"),
+        cid: "app-logopnf"
     }
     ] : [];
 
@@ -682,11 +687,11 @@ app.post("/send-verification-code", async (req, res) => {
       subject: "🔐 Verify Your Email - Welcome to Prime Net Farmer!"
   });
     
-    const attachments = (process.env.APP_LOGO_INLINE || "").toLowerCase() === "true" ? [
+    const attachments = (process.env.APP_logopnf_INLINE || "").toLowerCase() === "true" ? [
       {
-        filename: "logo.png",
-        path: path.join(__dirname, "../src/assets/logo.png"),
-        cid: "app-logo"
+        filename: "logopnf.png",
+        path: path.join(__dirname, "../src/assets/logopnf.png"),
+        cid: "app-logopnf"
     }
     ] : [];
     
@@ -1302,7 +1307,7 @@ app.post("/verify-token", async (req, res) => {
 });
 
 //////////////////
-app.post("/logout", (req, res) => {
+app.post("/logopnfut", (req, res) => {
   // Assuming the token is sent in the Authorization header
   const authToken = req.headers.authorization;
 
@@ -1316,7 +1321,7 @@ app.post("/logout", (req, res) => {
   // For example, you might revoke the token, update the user's status, etc.
 
   // Respond with a success message
-  res.status(200).json({ success: true, message: "Logout successful" });
+  res.status(200).json({ success: true, message: "logopnfut successful" });
 });
 app.get("/check-auth", authenticateToken, (req, res) => {
   // If the code reaches here, it means the user is authenticated
@@ -2198,7 +2203,7 @@ app.get("/getallsellers/:userId", async (req, res) => {
     res.status(500).json({ success: false, message: "An error occurred" });
   }
 });
-app.post("/api/logout", (req, res) => {
+app.post("/api/logopnfut", (req, res) => {
   const authToken = req.headers.authorization;
 
   if (!authToken) {
@@ -2209,10 +2214,10 @@ app.post("/api/logout", (req, res) => {
     const decoded = jwt.verify(authToken, JWT_SECRET);
     // Additional checks, if needed...
 
-    // If everything is fine, perform logout operations
+    // If everything is fine, perform logopnfut operations
     // ...
 
-    res.status(200).json({ message: "Logout successful" });
+    res.status(200).json({ message: "logopnfut successful" });
   } catch (error) {
     return res.status(401).json({ message: "Unauthorized: Invalid token" });
   }
@@ -4462,20 +4467,32 @@ app.post("/api/post/add-post", upload.single("image"), async (req, res) => {
       }
     }
     
-    // Check payment status for regular users (skip for admin posts)
-    if (!isSeller && !isAdminPost) {
-      console.log("=== CHECKING PAYMENT STATUS ===");
-      console.log("Poster canPostAds:", poster.canPostAds);
-      console.log("Poster postCredits:", poster.postCredits);
-      
-      // Check if user has paid and has credits
-      if (!poster.canPostAds) {
+  // Check payment status for all non-admin posts using User credits (buyers and sellers)
+  if (!isAdminPost) {
+      console.log("=== CHECKING PAYMENT STATUS (UNIFIED) ===");
+      let postingUser = null;
+      // Prefer explicit userId from request; fallback to seller's linked userId if present
+      if (userId) {
+        postingUser = await User.findById(userId).lean();
+      }
+      if (!postingUser && sellerId) {
+        // Try to find a User document that matches sellerId (some flows use sellerId as userId)
+        postingUser = await User.findById(sellerId).lean();
+      }
+      if (!postingUser) {
+        return res.status(400).json({ success: false, message: "User account not found for credit validation" });
+      }
+
+      console.log("Poster canPostAds:", postingUser.canPostAds);
+      console.log("Poster postCredits:", postingUser.postCredits);
+
+      if (!postingUser.canPostAds) {
         return res.status(402).json({ success: false, message: "Payment required. Please pay $1 to post an ad." });
       }
-      if ((poster.postCredits || 0) <= 0) {
+      if ((postingUser.postCredits || 0) <= 0) {
         return res.status(402).json({ success: false, message: "No posting credits. Please pay $1 for one posting." });
       }
-    }
+  }
     
     // Handle image path - convert to web-accessible URL
     let image = null;
@@ -4490,8 +4507,8 @@ app.post("/api/post/add-post", upload.single("image"), async (req, res) => {
     // Ad expires in 1 day
     const expiresAt = new Date(Date.now() + 24*60*60*1000);
     
-    // All ads start as pending - require admin verification (except admin posts)
-    let initialStatus = isAdminPost ? "verified" : "pending";
+  // All ads are auto-verified for 24 hours, then become unverified
+  let initialStatus = "verified";
     console.log("=== AD STATUS ===");
     console.log("Initial status:", initialStatus);
     console.log("Is admin post:", isAdminPost);
@@ -4537,10 +4554,14 @@ app.post("/api/post/add-post", upload.single("image"), async (req, res) => {
       createdAt: savedAd.createdAt
     });
     
-    // consume one credit (only for regular users, not admin posts)
-    if (!isSeller && !isAdminPost) {
-      await User.findByIdAndUpdate(userId, { $inc: { postCredits: -1 } });
-    }
+  // consume one credit for all non-admin posts
+  if (!isAdminPost) {
+      // decrement against the posting user account
+      const targetUserId = userId || sellerId;
+      if (targetUserId) {
+        await User.findByIdAndUpdate(targetUserId, { $inc: { postCredits: -1 } });
+      }
+  }
     
     res.status(201).json({ success: true, data: ad });
   } catch (err) {
