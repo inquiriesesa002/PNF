@@ -201,7 +201,42 @@ app.use(express.static(static_path));
 // Serve uploaded files from uploads directory
 const uploads_path = path.join(__dirname, "uploads");
 app.use('/uploads', express.static(uploads_path));
-app.use(cors());
+
+// Strict CORS for production with proper preflight handling
+const allowedOrigins = [
+  (process.env.FRONTEND_URL || '').replace(/\/$/, ''),
+  'https://www-pnf.com',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173'
+].filter(Boolean);
+
+const corsOptions = {
+  origin: function(origin, callback) {
+    if (!origin) return callback(null, true); // allow non-browser or same-origin
+    const clean = origin.replace(/\/$/, '');
+    if (allowedOrigins.includes(clean)) return callback(null, true);
+    return callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+  methods: ['GET','POST','PUT','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization']
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
+// Fallback headers for any route not covered (defensive)
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && allowedOrigins.includes(origin.replace(/\/$/, ''))) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Vary', 'Origin');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
+  }
+  next();
+});
 app.use(express.json({ limit: '5mb' }));
 ///////////
 // Attach io to req
