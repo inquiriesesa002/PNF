@@ -219,7 +219,7 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET','POST','PUT','DELETE','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization']
+  allowedHeaders: ['Content-Type','Authorization','email','password','X-Owner-Id']
 };
 
 app.use(cors(corsOptions));
@@ -232,7 +232,7 @@ app.use((req, res, next) => {
     res.header('Vary', 'Origin');
     res.header('Access-Control-Allow-Credentials', 'true');
     res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, email, password, X-Owner-Id');
     if (req.method === 'OPTIONS') return res.sendStatus(204);
   }
   next();
@@ -5744,6 +5744,9 @@ const adminAuth = (req, res, next) => {
 };
 // ---------------- USER + ADMIN ROUTES ----------------
 
+// Models used in event registration
+const EventRegistration = require('./models/EventRegistration');
+
 // Test route to check form data parsing
 app.post("/api/event/test", async (req, res) => {
   try {
@@ -5910,14 +5913,8 @@ app.post("/api/event/add-seller-event", upload.single("image"), async (req, res)
     const sellerId = req.body.sellerId;
     const status = req.body.status || "pending";
 
-    // Check free trial or payment requirement (skip for admin)
-    if (sellerId && sellerId !== "admin") {
-      const trialCheck = await checkSellerFreeTrial(sellerId);
-      if (!trialCheck.canPost) {
-        return res.status(402).json({ success: false, message: trialCheck.message });
-      }
-      console.log("Seller free trial check:", trialCheck.message);
-    }
+    // Skip payment check for event posting - events should be free to post
+    console.log("Seller event posting - no payment required");
     
     console.log("Seller event extraction:", { date, time, venue, description, title, sellerId });
 
@@ -6011,14 +6008,8 @@ app.post("/api/event/add-buyer-event", upload.single("image"), async (req, res) 
     const userId = req.body.userId;
     const status = req.body.status || "pending";
 
-    // Check free trial or payment requirement (skip for admin)
-    if (userId && userId !== "admin") {
-      const trialCheck = await checkFreeTrial(userId);
-      if (!trialCheck.canPost) {
-        return res.status(402).json({ success: false, message: trialCheck.message });
-      }
-      console.log("Buyer free trial check:", trialCheck.message);
-    }
+    // Skip payment check for event posting - events should be free to post
+    console.log("Buyer event posting - no payment required");
     
     console.log("Buyer event extraction:", { date, time, venue, description, title, userId });
 
@@ -6209,7 +6200,11 @@ app.get("/api/seller/free-trial-status/:sellerId", async (req, res) => {
 app.put("/api/event/events/:id", upload.single("image"), async (req, res) => {
   try {
     const { date, time, venue, description, title } = req.body;
-    const updateData = { time, venue, description };
+    const updateData = { };
+
+    if (typeof time !== 'undefined') updateData.time = time;
+    if (typeof venue !== 'undefined') updateData.venue = venue;
+    if (typeof description !== 'undefined') updateData.description = description;
     
     // Handle date field mapping
     if (date) {
@@ -6223,6 +6218,25 @@ app.put("/api/event/events/:id", upload.single("image"), async (req, res) => {
       updateData.title = title;
   } else if (description) {
       updateData.title = description.substring(0, 50);
+  }
+
+    // Persist admin-set registration price if provided
+    if (typeof req.body.registrationPrice !== 'undefined' && req.body.registrationPrice !== null && req.body.registrationPrice !== '') {
+      const priceNum = Number(req.body.registrationPrice);
+      if (!Number.isNaN(priceNum) && priceNum >= 0) {
+        updateData.registrationPrice = priceNum;
+      }
+    }
+
+    // Optional flags if sent
+    if (typeof req.body.isFeatured !== 'undefined') {
+      updateData.isFeatured = req.body.isFeatured === 'true' || req.body.isFeatured === true;
+    }
+    if (typeof req.body.maxRegistrations !== 'undefined' && req.body.maxRegistrations !== '') {
+      const maxReg = Number(req.body.maxRegistrations);
+      if (!Number.isNaN(maxReg) && maxReg >= 0) {
+        updateData.maxRegistrations = maxReg;
+      }
   }
     
     if (req.file) updateData.image = req.file.path;
@@ -6252,6 +6266,176 @@ app.get("/api/event/admin/pending", adminAuth, async (req, res) => {
   try {
     const events = await Event.find({ status: "pending" });
     res.json({ success: true, data: events });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Approve event with price and feature flag
+app.post("/api/event/admin/approve/:id", adminAuth, async (req, res) => {
+  try {
+    const { price, isFeatured, maxRegistrations, message } = req.body;
+    if (price == null || isNaN(Number(price)) || Number(price) < 0) {
+      return res.status(400).json({ success: false, message: "Valid price is required (cents)" });
+    }
+    const update = {
+      status: "verified",
+      registrationPrice: Number(price),
+      isFeatured: !!isFeatured,
+      approvedBy: ADMIN_EMAIL,
+      approvedAt: new Date(),
+      message: message || "",
+    };
+    if (maxRegistrations != null) update.maxRegistrations = Number(maxRegistrations);
+    const updated = await Event.findByIdAndUpdate(req.params.id, update, { new: true });
+    if (!updated) return res.status(404).json({ success: false, message: "Event not found" });
+    res.json({ success: true, data: updated });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Featured events for homepage (verified only)
+app.get("/api/event/featured", async (req, res) => {
+  try {
+    const now = new Date();
+    const events = await Event.find({
+      status: "verified",
+      isFeatured: true,
+      $or: [
+        { expiresAt: { $exists: false } },
+        { expiresAt: null },
+        { expiresAt: { $gt: now } }
+      ]
+    }).sort({ approvedAt: -1 }).limit(20);
+    res.json({ success: true, data: events });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Simple event registration endpoint to capture user details before payment
+app.post('/api/event/register', async (req, res) => {
+  try {
+    const { eventId, userId, userName, userEmail, userContact, amount } = req.body;
+    if (!eventId || !userId || !userEmail) {
+      return res.status(400).json({ success: false, message: 'eventId, userId and userEmail are required' });
+    }
+    const event = await Event.findById(eventId);
+    if (!event || event.status !== 'verified') {
+      return res.status(404).json({ success: false, message: 'Event not available for registration' });
+    }
+    const registration = await EventRegistration.create({
+      eventId: event._id,
+      userId,
+      amount: Number(amount ?? event.registrationPrice ?? 0),
+      status: 'pending',
+      currency: 'usd',
+      metadata: { userName, userEmail, userContact }
+    });
+    return res.json({ success: true, registrationId: registration._id });
+  } catch (err) {
+    console.error('Simple register error:', err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Create registration payment intent (user pays to register)
+app.post('/api/event/:eventId/register/intent', async (req, res) => {
+  try {
+    const { userId, payment_method_id, currency = 'usd' } = req.body;
+    const { eventId } = req.params;
+    if (!userId || !payment_method_id) {
+      return res.status(400).json({ success: false, message: 'userId and payment_method_id are required' });
+    }
+    const event = await Event.findById(eventId);
+    if (!event || event.status !== 'verified') {
+      return res.status(404).json({ success: false, message: 'Event not available for registration' });
+    }
+    if (event.maxRegistrations > 0 && event.registrationsCount >= event.maxRegistrations) {
+      return res.status(409).json({ success: false, message: 'Registrations are full' });
+    }
+    const amount = Number(event.registrationPrice || 0);
+    if (isNaN(amount) || amount < 0) {
+      return res.status(400).json({ success: false, message: 'Invalid event price' });
+    }
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: amount,
+      currency,
+      payment_method: payment_method_id,
+      confirmation_method: 'automatic',
+      confirm: false,
+      metadata: { type: 'event_registration', eventId: eventId, userId: userId }
+    });
+    const reg = await EventRegistration.create({
+      eventId: event._id,
+      userId,
+      amount,
+      currency,
+      status: 'pending',
+      paymentIntentId: paymentIntent.id,
+      metadata: {}
+    });
+    res.json({ success: true, client_secret: paymentIntent.client_secret, registrationId: reg._id });
+  } catch (err) {
+    console.error('Registration intent error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Confirm registration after frontend confirms the payment intent
+app.post('/api/event/:eventId/register/confirm', async (req, res) => {
+  try {
+    const { registrationId, payment_intent_id } = req.body;
+    const { eventId } = req.params;
+    const reg = await EventRegistration.findById(registrationId);
+    if (!reg || reg.eventId.toString() !== eventId) {
+      return res.status(404).json({ success: false, message: 'Registration not found' });
+    }
+    // Fetch intent to check status
+    const intent = await stripe.paymentIntents.retrieve(payment_intent_id || reg.paymentIntentId);
+    if (intent.status === 'succeeded') {
+      if (reg.status !== 'paid') {
+        reg.status = 'paid';
+        await reg.save();
+        await Event.findByIdAndUpdate(eventId, { $inc: { registrationsCount: 1 } });
+      }
+      return res.json({ success: true, status: 'paid' });
+    }
+    if (intent.status === 'requires_payment_method' || intent.status === 'canceled' || intent.status === 'requires_action') {
+      reg.status = 'failed';
+      await reg.save();
+      return res.json({ success: true, status: 'failed' });
+    }
+    res.json({ success: true, status: intent.status });
+  } catch (err) {
+    console.error('Registration confirm error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// List registrations for an event (admin)
+app.get('/api/event/:eventId/registrations', adminAuth, async (req, res) => {
+  try {
+    const regs = await EventRegistration.find({ eventId: req.params.eventId }).populate('userId', 'name email');
+    res.json({ success: true, data: regs });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// List registrations for creator (seller or user who owns the event)
+app.get('/api/event/:eventId/registrations/creator', async (req, res) => {
+  try {
+    const event = await Event.findById(req.params.eventId);
+    if (!event) return res.status(404).json({ success: false, message: 'Event not found' });
+    // Simple auth: allow if header has ownerId matching event.userId or event.sellerId
+    const ownerId = req.headers['x-owner-id'];
+    if (!ownerId || (event.userId !== ownerId && event.sellerId !== ownerId && !req.isAdmin)) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+    const regs = await EventRegistration.find({ eventId: req.params.eventId }).populate('userId', 'name email');
+    res.json({ success: true, data: regs });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
