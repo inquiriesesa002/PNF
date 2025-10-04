@@ -206,15 +206,47 @@ app.use('/uploads', express.static(uploads_path));
 const allowedOrigins = [
   (process.env.FRONTEND_URL || '').replace(/\/$/, ''),
   'https://www-pnf.com',
+  'https://pnf.vercel.app',
+  'https://pnf-frontend.vercel.app',
   'http://localhost:5173',
-  'http://127.0.0.1:5173'
+  'http://127.0.0.1:5173',
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'http://localhost:4173',
+  'http://127.0.0.1:4173',
+  'http://localhost:8080',
+  'http://127.0.0.1:8080'
 ].filter(Boolean);
 
 const corsOptions = {
   origin: function(origin, callback) {
-    if (!origin) return callback(null, true); // allow non-browser or same-origin
+    console.log('🔍 CORS Check - Origin:', origin);
+    console.log('🔍 CORS Check - Allowed Origins:', allowedOrigins);
+    
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) {
+      console.log('🔍 CORS Check - No origin, allowing');
+      return callback(null, true);
+    }
+    
     const clean = origin.replace(/\/$/, '');
-    if (allowedOrigins.includes(clean)) return callback(null, true);
+    console.log('🔍 CORS Check - Clean origin:', clean);
+    
+    // Allow all localhost and 127.0.0.1 ports for development
+    if (clean.includes('localhost') || clean.includes('127.0.0.1')) {
+      console.log('🔍 CORS Check - Localhost detected, allowing');
+      return callback(null, true);
+    }
+    
+    // Check against allowed origins
+    if (allowedOrigins.includes(clean)) {
+      console.log('🔍 CORS Check - Origin allowed:', clean);
+      return callback(null, true);
+    }
+    
+    console.log('❌ CORS blocked origin:', origin);
+    console.log('❌ Clean origin:', clean);
+    console.log('❌ Not in allowed origins list');
     return callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
@@ -224,6 +256,26 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
+
+// Additional CORS middleware for Vercel deployment
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  console.log('🔍 Additional CORS middleware - Origin:', origin);
+  
+  if (origin && allowedOrigins.includes(origin.replace(/\/$/, ''))) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, email, password, X-Owner-Id');
+  }
+  
+  if (req.method === 'OPTIONS') {
+    console.log('🔍 Handling OPTIONS request');
+    return res.sendStatus(200);
+  }
+  
+  next();
+});
 // Fallback headers for any route not covered (defensive)
 app.use((req, res, next) => {
   const origin = req.headers.origin;
@@ -5746,6 +5798,7 @@ const adminAuth = (req, res, next) => {
 
 // Models used in event registration
 const EventRegistration = require('./models/EventRegistration');
+const Query = require('./models/Query');
 
 // Test route to check form data parsing
 app.post("/api/event/test", async (req, res) => {
@@ -5804,8 +5857,10 @@ app.post("/api/event/add-event", upload.single("image"), async (req, res) => {
     console.log("req.body keys:", Object.keys(req.body));
     console.log("req.body.title:", req.body.title);
     console.log("req.body.description:", req.body.description);
-    console.log("req.body.date:", req.body.date);
-    console.log("req.body.time:", req.body.time);
+    console.log("req.body.startDate:", req.body.startDate);
+    console.log("req.body.endDate:", req.body.endDate);
+    console.log("req.body.startTime:", req.body.startTime);
+    console.log("req.body.endTime:", req.body.endTime);
     console.log("req.body.venue:", req.body.venue);
     console.log("req.body.userId:", req.body.userId);
     console.log("req.body.status:", req.body.status);
@@ -5813,8 +5868,10 @@ app.post("/api/event/add-event", upload.single("image"), async (req, res) => {
     console.log("Request method:", req.method);
     
     // Direct field extraction
-    const date = req.body.date;
-    const time = req.body.time;
+    const startDate = req.body.startDate;
+    const endDate = req.body.endDate;
+    const startTime = req.body.startTime;
+    const endTime = req.body.endTime;
     const venue = req.body.venue;
     const description = req.body.description;
     const title = req.body.title;
@@ -5830,17 +5887,19 @@ app.post("/api/event/add-event", upload.single("image"), async (req, res) => {
       console.log("Free trial check:", trialCheck.message);
     }
     
-    console.log("Direct extraction:", { date, time, venue, description, title });
+    console.log("Direct extraction:", { startDate, endDate, startTime, endTime, venue, description, title });
 
     // Validate required fields
     console.log("Field validation check:");
-    console.log("date:", date, "valid:", !!date);
-    console.log("time:", time, "valid:", !!time);
+    console.log("startDate:", startDate, "valid:", !!startDate);
+    console.log("endDate:", endDate, "valid:", !!endDate);
+    console.log("startTime:", startTime, "valid:", !!startTime);
+    console.log("endTime:", endTime, "valid:", !!endTime);
     console.log("venue:", venue, "valid:", !!venue);
     console.log("description:", description, "valid:", !!description);
     
-    if (!date || !time || !venue || !description) {
-      console.log("Missing fields:", { date: !!date, time: !!time, venue: !!venue, description: !!description });
+    if (!startDate || !endDate || !startTime || !endTime || !venue || !description) {
+      console.log("Missing fields:", { startDate: !!startDate, endDate: !!endDate, startTime: !!startTime, endTime: !!endTime, venue: !!venue, description: !!description });
       return res.status(400).json({ 
         success: false, 
         message: "Missing required fields" 
@@ -5850,9 +5909,10 @@ app.post("/api/event/add-event", upload.single("image"), async (req, res) => {
     // Generate title from description
     const eventTitle = title || description.substring(0, 50) || "Event";
     
-    // Parse date
-    const eventDate = new Date(date);
-    if (isNaN(eventDate.getTime())) {
+    // Parse dates
+    const eventStartDate = new Date(startDate);
+    const eventEndDate = new Date(endDate);
+    if (isNaN(eventStartDate.getTime()) || isNaN(eventEndDate.getTime())) {
       return res.status(400).json({ 
         success: false, 
         message: "Invalid date format" 
@@ -5862,9 +5922,10 @@ app.post("/api/event/add-event", upload.single("image"), async (req, res) => {
     // Create event with ALL required fields
     const event = new Event({ 
       title: eventTitle,
-      startDate: eventDate, 
-      endDate: eventDate, 
-      time, 
+      startDate: eventStartDate, 
+      endDate: eventEndDate, 
+      startTime, 
+      endTime,
       venue, 
       description, 
       image: req.file ? req.file.path : null,
@@ -5874,9 +5935,10 @@ app.post("/api/event/add-event", upload.single("image"), async (req, res) => {
     
     console.log("Creating event with:", {
       title: eventTitle,
-      startDate: eventDate,
-      endDate: eventDate,
-      time,
+      startDate: eventStartDate,
+      endDate: eventEndDate,
+      startTime,
+      endTime,
       venue,
       description,
       image: req.file ? req.file.path : null,
@@ -5899,14 +5961,19 @@ app.post("/api/event/add-event", upload.single("image"), async (req, res) => {
 // Add Event for Sellers - Dedicated API
 app.post("/api/event/add-seller-event", upload.single("image"), async (req, res) => {
   try {
-    console.log("=== SELLER EVENT CREATION DEBUG ===");
-    console.log("req.body:", req.body);
-    console.log("req.file:", req.file);
-    console.log("req.body keys:", Object.keys(req.body));
+    console.log("🚀 === SELLER EVENT CREATION DEBUG ===");
+    console.log("🔍 Request Origin:", req.headers.origin);
+    console.log("🔍 Request Method:", req.method);
+    console.log("🔍 Request URL:", req.url);
+    console.log("🔍 req.body:", req.body);
+    console.log("🔍 req.file:", req.file);
+    console.log("🔍 req.body keys:", Object.keys(req.body));
     
     // Direct field extraction
-    const date = req.body.date;
-    const time = req.body.time;
+    const startDate = req.body.startDate;
+    const endDate = req.body.endDate;
+    const startTime = req.body.startTime;
+    const endTime = req.body.endTime;
     const venue = req.body.venue;
     const description = req.body.description;
     const title = req.body.title;
@@ -5916,11 +5983,11 @@ app.post("/api/event/add-seller-event", upload.single("image"), async (req, res)
     // Skip payment check for event posting - events should be free to post
     console.log("Seller event posting - no payment required");
     
-    console.log("Seller event extraction:", { date, time, venue, description, title, sellerId });
+    console.log("Seller event extraction:", { startDate, endDate, startTime, endTime, venue, description, title, sellerId });
 
     // Validate required fields
-    if (!date || !time || !venue || !description) {
-      console.log("Missing fields:", { date: !!date, time: !!time, venue: !!venue, description: !!description });
+    if (!startDate || !endDate || !startTime || !endTime || !venue || !description) {
+      console.log("Missing fields:", { startDate: !!startDate, endDate: !!endDate, startTime: !!startTime, endTime: !!endTime, venue: !!venue, description: !!description });
       return res.status(400).json({ 
         success: false, 
         message: "Missing required fields" 
@@ -5930,9 +5997,10 @@ app.post("/api/event/add-seller-event", upload.single("image"), async (req, res)
     // Generate title from description
     const eventTitle = title || description.substring(0, 50) || "Event";
     
-    // Parse date
-    const eventDate = new Date(date);
-    if (isNaN(eventDate.getTime())) {
+    // Parse dates
+    const eventStartDate = new Date(startDate);
+    const eventEndDate = new Date(endDate);
+    if (isNaN(eventStartDate.getTime()) || isNaN(eventEndDate.getTime())) {
       return res.status(400).json({ 
         success: false, 
         message: "Invalid date format" 
@@ -5953,9 +6021,10 @@ app.post("/api/event/add-seller-event", upload.single("image"), async (req, res)
     // Create event with sellerId
     const event = new Event({ 
       title: eventTitle,
-      startDate: eventDate, 
-      endDate: eventDate, 
-      time, 
+      startDate: eventStartDate, 
+      endDate: eventEndDate, 
+      startTime, 
+      endTime,
       venue, 
       description, 
       image: image,
@@ -5966,9 +6035,10 @@ app.post("/api/event/add-seller-event", upload.single("image"), async (req, res)
     
     console.log("Creating seller event with:", {
       title: eventTitle,
-      startDate: eventDate,
-      endDate: eventDate,
-      time,
+      startDate: eventStartDate,
+      endDate: eventEndDate,
+      startTime,
+      endTime,
       venue,
       description,
       image: req.file ? req.file.path : null,
@@ -6000,8 +6070,10 @@ app.post("/api/event/add-buyer-event", upload.single("image"), async (req, res) 
     console.log("req.body keys:", Object.keys(req.body));
     
     // Direct field extraction
-    const date = req.body.date;
-    const time = req.body.time;
+    const startDate = req.body.startDate;
+    const endDate = req.body.endDate;
+    const startTime = req.body.startTime;
+    const endTime = req.body.endTime;
     const venue = req.body.venue;
     const description = req.body.description;
     const title = req.body.title;
@@ -6011,11 +6083,11 @@ app.post("/api/event/add-buyer-event", upload.single("image"), async (req, res) 
     // Skip payment check for event posting - events should be free to post
     console.log("Buyer event posting - no payment required");
     
-    console.log("Buyer event extraction:", { date, time, venue, description, title, userId });
+    console.log("Buyer event extraction:", { startDate, endDate, startTime, endTime, venue, description, title, userId });
 
     // Validate required fields
-    if (!date || !time || !venue || !description) {
-      console.log("Missing fields:", { date: !!date, time: !!time, venue: !!venue, description: !!description });
+    if (!startDate || !endDate || !startTime || !endTime || !venue || !description) {
+      console.log("Missing fields:", { startDate: !!startDate, endDate: !!endDate, startTime: !!startTime, endTime: !!endTime, venue: !!venue, description: !!description });
       return res.status(400).json({ 
         success: false, 
         message: "Missing required fields" 
@@ -6025,9 +6097,10 @@ app.post("/api/event/add-buyer-event", upload.single("image"), async (req, res) 
     // Generate title from description
     const eventTitle = title || description.substring(0, 50) || "Event";
     
-    // Parse date
-    const eventDate = new Date(date);
-    if (isNaN(eventDate.getTime())) {
+    // Parse dates
+    const eventStartDate = new Date(startDate);
+    const eventEndDate = new Date(endDate);
+    if (isNaN(eventStartDate.getTime()) || isNaN(eventEndDate.getTime())) {
       return res.status(400).json({ 
         success: false, 
         message: "Invalid date format" 
@@ -6048,9 +6121,10 @@ app.post("/api/event/add-buyer-event", upload.single("image"), async (req, res) 
     // Create event with userId
     const event = new Event({ 
       title: eventTitle,
-      startDate: eventDate, 
-      endDate: eventDate, 
-      time, 
+      startDate: eventStartDate, 
+      endDate: eventEndDate, 
+      startTime, 
+      endTime,
       venue, 
       description, 
       image: image,
@@ -6061,9 +6135,10 @@ app.post("/api/event/add-buyer-event", upload.single("image"), async (req, res) 
     
     console.log("Creating buyer event with:", {
       title: eventTitle,
-      startDate: eventDate,
-      endDate: eventDate,
-      time,
+      startDate: eventStartDate,
+      endDate: eventEndDate,
+      startTime,
+      endTime,
       venue,
       description,
       image: req.file ? req.file.path : null,
@@ -6199,19 +6274,23 @@ app.get("/api/seller/free-trial-status/:sellerId", async (req, res) => {
 // Update event
 app.put("/api/event/events/:id", upload.single("image"), async (req, res) => {
   try {
-    const { date, time, venue, description, title } = req.body;
+    const { startDate, endDate, startTime, endTime, venue, description, title } = req.body;
     const updateData = { };
 
-    if (typeof time !== 'undefined') updateData.time = time;
+    if (typeof startTime !== 'undefined') updateData.startTime = startTime;
+    if (typeof endTime !== 'undefined') updateData.endTime = endTime;
     if (typeof venue !== 'undefined') updateData.venue = venue;
     if (typeof description !== 'undefined') updateData.description = description;
     
     // Handle date field mapping
-    if (date) {
-      const eventDate = new Date(date);
-      updateData.startDate = eventDate;
-      updateData.endDate = eventDate;
-  }
+    if (startDate) {
+      const eventStartDate = new Date(startDate);
+      updateData.startDate = eventStartDate;
+    }
+    if (endDate) {
+      const eventEndDate = new Date(endDate);
+      updateData.endDate = eventEndDate;
+    }
     
     // Handle title field
     if (title) {
@@ -7191,16 +7270,23 @@ app.get("/ratings/seller/:sellerId", async (req, res) => {
       .populate('userId', 'name email')
       .sort({ createdAt: -1 });
 
+    console.log("🔍 Backend - Found ratings for seller:", sellerId, "Count:", ratings.length);
+    console.log("🔍 Backend - Ratings data:", ratings);
+
     // Calculate average rating
     const averageRating = ratings.length > 0 
       ? ratings.reduce((sum, rating) => sum + rating.rating, 0) / ratings.length 
       : 0;
 
-    res.status(200).json({
+    const responseData = {
       ratings,
       averageRating: Math.round(averageRating * 10) / 10, // Round to 1 decimal place
       totalRatings: ratings.length
-    });
+    };
+
+    console.log("🔍 Backend - Sending response:", responseData);
+
+    res.status(200).json(responseData);
   } catch (error) {
     console.error("Error fetching seller ratings:", error);
     res.status(500).json({ message: "Internal Server Error" });
@@ -7331,6 +7417,127 @@ setInterval(expireContentTask, 60 * 60 * 1000); // 1 hour
 
 // Run the task immediately on startup
 expireContentTask();
+
+// ---------------- QUERIES ROUTES ----------------
+
+// Add event query
+app.post("/api/queries/add-event-query", async (req, res) => {
+  try {
+    const { name, email, contact, message, eventName, type } = req.body;
+
+    if (!name || !email || !message || !eventName) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Missing required fields" 
+      });
+    }
+
+    const query = new Query({
+      name,
+      email,
+      contact: contact || "",
+      message,
+      eventName,
+      type: type || "event_query"
+    });
+
+    await query.save();
+
+    console.log("Event query saved:", query);
+    res.json({ 
+      success: true, 
+      message: "Query submitted successfully",
+      queryId: query._id
+    });
+
+  } catch (err) {
+    console.error("Error saving event query:", err);
+    res.status(500).json({ 
+      success: false, 
+      message: "Failed to submit query" 
+    });
+  }
+});
+
+// Get all queries (admin)
+app.get("/api/queries/get-all", async (req, res) => {
+  try {
+    const queries = await Query.find().sort({ createdAt: -1 });
+    res.json({ 
+      success: true, 
+      queries 
+    });
+  } catch (err) {
+    console.error("Error fetching queries:", err);
+    res.status(500).json({ 
+      success: false, 
+      message: "Failed to fetch queries" 
+    });
+  }
+});
+
+// Get event queries only (admin)
+app.get("/api/queries/get-event-queries", async (req, res) => {
+  try {
+    const queries = await Query.find({ type: "event_query" }).sort({ createdAt: -1 });
+    res.json({ 
+      success: true, 
+      queries 
+    });
+  } catch (err) {
+    console.error("Error fetching event queries:", err);
+    res.status(500).json({ 
+      success: false, 
+      message: "Failed to fetch event queries" 
+    });
+  }
+});
+
+// Reply to query (admin)
+app.post("/api/queries/reply/:queryId", async (req, res) => {
+  try {
+    const { queryId } = req.params;
+    const { adminReply, repliedBy } = req.body;
+
+    if (!adminReply) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Reply message is required" 
+      });
+    }
+
+    const query = await Query.findByIdAndUpdate(
+      queryId,
+      {
+        adminReply,
+        repliedBy: repliedBy || "admin",
+        repliedAt: new Date(),
+        status: "replied"
+      },
+      { new: true }
+    );
+
+    if (!query) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "Query not found" 
+      });
+    }
+
+    res.json({ 
+      success: true, 
+      message: "Reply sent successfully",
+      query 
+    });
+
+  } catch (err) {
+    console.error("Error replying to query:", err);
+    res.status(500).json({ 
+      success: false, 
+      message: "Failed to send reply" 
+    });
+  }
+});
 
 // Export for Vercel
 module.exports = app;
