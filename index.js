@@ -192,7 +192,7 @@ const app = express();
 
 app.use(express.urlencoded({ extended: true })); 
 
-require("./db/conn");
+const { dbConnection, isConnected } = require("./db/conn");
 const jwtToken = require("jsonwebtoken");
 const port = process.env.PORT || 3000;
 const static_path = path.join(__dirname, "../public");
@@ -206,6 +206,7 @@ app.use('/uploads', express.static(uploads_path));
 const allowedOrigins = [
   (process.env.FRONTEND_URL || '').replace(/\/$/, ''),
   'https://www-pnf.com',
+  'https://www.pnf.com',
   'https://pnf.vercel.app',
   'https://pnf-frontend.vercel.app',
   'http://localhost:5173',
@@ -251,7 +252,16 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET','POST','PUT','DELETE','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization','email','password','X-Owner-Id']
+  allowedHeaders: [
+    'Content-Type',
+    'Accept',
+    'Authorization',
+    'Origin',
+    'X-Requested-With',
+    'email',
+    'password',
+    'X-Owner-Id'
+  ]
 };
 
 app.use(cors(corsOptions));
@@ -266,7 +276,7 @@ app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', origin);
     res.header('Access-Control-Allow-Credentials', 'true');
     res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, email, password, X-Owner-Id');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, Origin, X-Requested-With, email, password, X-Owner-Id');
   }
   
   if (req.method === 'OPTIONS') {
@@ -284,7 +294,7 @@ app.use((req, res, next) => {
     res.header('Vary', 'Origin');
     res.header('Access-Control-Allow-Credentials', 'true');
     res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, email, password, X-Owner-Id');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, Origin, X-Requested-With, email, password, X-Owner-Id');
     if (req.method === 'OPTIONS') return res.sendStatus(204);
   }
   next();
@@ -7412,11 +7422,27 @@ const expireContentTask = async () => {
   }
 };
 
-// Run the expiration task every hour
-setInterval(expireContentTask, 60 * 60 * 1000); // 1 hour
+// Guarded scheduler: run only when DB is connected
+function scheduleExpirationTask() {
+  const runIfConnected = async () => {
+    if (isConnected && isConnected()) {
+      try {
+        await expireContentTask();
+      } catch (e) {
+        console.error('Expiration task run failed:', e);
+      }
+    } else {
+      console.warn('Skipping expiration task: DB not connected');
+    }
+  };
 
-// Run the task immediately on startup
-expireContentTask();
+  // Run every hour
+  setInterval(runIfConnected, 60 * 60 * 1000);
+  // Run once at startup after short delay to allow DB connect
+  setTimeout(runIfConnected, 5000);
+}
+
+scheduleExpirationTask();
 
 // ---------------- QUERIES ROUTES ----------------
 
