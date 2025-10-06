@@ -1,3 +1,4 @@
+require('dotenv').config();
 const verificationStore = {}; // in-memory store for email verification codes
 const { createVerificationEmailTemplate } = require('./emailTemplates');
 const jwt = require('jsonwebtoken');
