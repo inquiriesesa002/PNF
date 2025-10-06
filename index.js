@@ -1,4 +1,7 @@
-require('dotenv').config();
+const dotenv = require('dotenv');
+// Load node.env first (may contain placeholders), then load .env to override with real keys
+dotenv.config({ path: __dirname + '/node.env' });
+dotenv.config();
 const verificationStore = {}; // in-memory store for email verification codes
 const { createVerificationEmailTemplate } = require('./emailTemplates');
 const jwt = require('jsonwebtoken');
@@ -731,7 +734,8 @@ app.post("/seller-signup", async (req, res) => {
 });
 
 
-app.post("/send-verification-code", async (req, res) => {
+// Shared handler for sending verification code
+const handleSendVerificationCode = async (req, res) => {
   const { email, userName = "Valued User" } = req.body;
 
   if (!email) {
@@ -822,7 +826,7 @@ app.post("/send-verification-code", async (req, res) => {
       warning: "Email sending failed, but code is available for verification"
   });
   }
-});
+};
 
 
 
@@ -838,18 +842,22 @@ const { CloudinaryStorage } = require("multer-storage-cloudinary");
 const cloudinary = require("cloudinary").v2;
 const multer = require("multer");
 
-// Cloudinary config
+// Cloudinary config with placeholder safety
+const normalizeValue = (v) => (v && !/^(your_|YOUR_)/.test(String(v))) ? v : '';
+const CLOUDINARY_CLOUD_NAME = normalizeValue(process.env.CLOUDINARY_CLOUD_NAME);
+const CLOUDINARY_API_KEY = normalizeValue(process.env.CLOUDINARY_API_KEY);
+const CLOUDINARY_API_SECRET = normalizeValue(process.env.CLOUDINARY_API_SECRET);
+
 cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
+  cloud_name: CLOUDINARY_CLOUD_NAME,
+  api_key: CLOUDINARY_API_KEY,
+  api_secret: CLOUDINARY_API_SECRET,
 });
 
 // Check if Cloudinary is properly configured
-const isCloudinaryConfigured = process.env.CLOUDINARY_CLOUD_NAME && 
-                               process.env.CLOUDINARY_API_KEY && 
-                               process.env.CLOUDINARY_API_SECRET &&
-                               process.env.CLOUDINARY_CLOUD_NAME !== 'your_cloudinary_cloud_name';
+const isCloudinaryConfigured = Boolean(
+  CLOUDINARY_CLOUD_NAME && CLOUDINARY_API_KEY && CLOUDINARY_API_SECRET
+);
 
 let storage;
 if (isCloudinaryConfigured) {
@@ -4303,6 +4311,10 @@ app.get('/test-makepayment', (req, res) => {
   });
 });
 
+// Register both legacy and /api routes
+app.post("/send-verification-code", handleSendVerificationCode);
+app.post("/api/send-verification-code", handleSendVerificationCode);
+
 // Test endpoint to verify Stripe keys
 app.get('/test-stripe-keys', async (req, res) => {
   try {
@@ -6880,7 +6892,8 @@ app.delete("/api/workupload/:sampleId", async (req, res) => {
 });
 
 // Verify Email Code
-app.post("/verify-email-code", async (req, res) => {
+// Shared handler for verifying code
+const handleVerifyEmailCode = async (req, res) => {
   const { email, code } = req.body;
 
   console.log("=== OTP VERIFICATION REQUEST ===");
@@ -6940,7 +6953,11 @@ app.post("/verify-email-code", async (req, res) => {
       error: err.message 
   });
   }
-});
+};
+
+// Register both legacy and /api routes
+app.post("/verify-email-code", handleVerifyEmailCode);
+app.post("/api/verify-email-code", handleVerifyEmailCode);
 
 // Create Stripe checkout session for subscription (6 months)
 app.post('/create-subscription-checkout-session', async (req, res) => {
