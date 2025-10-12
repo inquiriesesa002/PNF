@@ -1466,28 +1466,60 @@ app.get("/users", async (req, res) => {
 });
 app.get("/getallsellers", async (req, res) => {
   try {
-    const allusers = await Seller.find({}); // Query all cities and project only the 'cityname' field
+    console.log("🔍 Fetching all sellers with populated references");
+    
+    // Populate category, product, and subproduct references - Same as getseller endpoint
+    const allusers = await Seller.find({})
+      .populate("category", "Title name")
+      .populate("product", "name Title")
+      .populate("subproduct", "Title name");
+    
+    console.log("📊 All sellers fetched:", allusers.length);
+    console.log("📊 Sample seller data:", allusers[0] ? {
+      name: allusers[0].Name,
+      subproduct: allusers[0].subproduct,
+      category: allusers[0].category,
+      product: allusers[0].product
+    } : "No sellers found");
+    
     res.status(200).json(allusers);
   } catch (error) {
-    console.error(error);
+    console.error("❌ Error fetching all sellers:", error);
     res
       .status(500)
-      .json({ message: "An error occurred while fetching cities" });
+      .json({ message: "An error occurred while fetching sellers" });
   }
 });
 app.get("/getseller/:userId", async (req, res) => {
-  console.log("hy")
+  console.log("🔍 Fetching seller with populated references")
   try {
+    const id = req.params.userId;
+    console.log("Seller ID:", id)
     
-    const id=req.params.userId;
-    console.log(id)
-    const allusers = await Seller.findById(id); // Query all cities and project only the 'cityname' field
-    res.status(200).json(allusers);
+    // Populate category, product, and subproduct references
+    const seller = await Seller.findById(id)
+      .populate("category", "Title name")
+      .populate("product", "name Title")
+      .populate("subproduct", "Title name");
+    
+    if (!seller) {
+      return res.status(404).json({ message: "Seller not found" });
+    }
+    
+    console.log("✅ Seller found with populated data:", {
+      name: seller.Name,
+      category: seller.category?.Title || seller.category?.name,
+      product: seller.product?.name || seller.product?.Title,
+      subproduct: seller.subproduct?.Title || seller.subproduct?.name,
+      image: seller.image,
+      profileImage: seller.profileImage,
+      allFields: Object.keys(seller.toObject())
+    });
+    
+    res.status(200).json(seller);
   } catch (error) {
-    console.error(error);
-    res
-      .status(500)
-      .json({ message: "An error occurred while fetching cities" });
+    console.error("❌ Error fetching seller:", error);
+    res.status(500).json({ message: "An error occurred while fetching seller" });
   }
 });
 //////////////////
