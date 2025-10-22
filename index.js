@@ -206,27 +206,22 @@ app.use(express.static(static_path));
 const uploads_path = path.join(__dirname, "uploads");
 app.use('/uploads', express.static(uploads_path));
 
-// Strict CORS for production with proper preflight handling
-
-
 // ✅ Allowed origins — add all your frontend URLs here
 const allowedOrigins = [
-  "http://localhost:5173",          // Local development
+  "http://localhost:5173",
   "http://127.0.0.1:5173",
-  "https://www-pnf.com",            // ✅ Your live frontend
-  "https://pnf.vercel.app",         // If you also use Vercel preview frontend
-  "https://pnf-backend.vercel.app"                   // Without www
+  "https://www-pnf.com",
+  "https://pnf.vercel.app",
+  "https://pnf-backend.vercel.app",
 ];
 
 // ✅ CORS configuration
 const corsOptions = {
   origin: function (origin, callback) {
     console.log("🔍 CORS Check — Origin:", origin);
-
-    // Allow requests without origin (like Postman or mobile apps)
     if (!origin) return callback(null, true);
 
-    const cleanOrigin = origin.replace(/\/$/, ""); // Remove trailing slash
+    const cleanOrigin = origin.replace(/\/$/, "");
     if (allowedOrigins.includes(cleanOrigin)) {
       console.log("✅ CORS Allowed:", cleanOrigin);
       return callback(null, true);
@@ -235,7 +230,7 @@ const corsOptions = {
     console.warn("❌ CORS Blocked:", origin);
     callback(new Error("Not allowed by CORS"));
   },
-  credentials: true, // Enable cookies and auth headers
+  credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
   allowedHeaders: [
     "Content-Type",
@@ -251,11 +246,9 @@ const corsOptions = {
 
 // ✅ Apply CORS globally
 app.use(cors(corsOptions));
-
-// ✅ Handle preflight requests (important for Vercel)
 app.options("*", cors(corsOptions));
 
-// ✅ Parse JSON body
+// ✅ Parse JSON
 app.use(express.json({ limit: "5mb" }));
 
 ///////////
