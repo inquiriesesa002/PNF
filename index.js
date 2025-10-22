@@ -207,103 +207,58 @@ const uploads_path = path.join(__dirname, "uploads");
 app.use('/uploads', express.static(uploads_path));
 
 // Strict CORS for production with proper preflight handling
-const allowedOrigins = [
-  (process.env.FRONTEND_URL || '').replace(/\/$/, ''),
-  'https://www-pnf.com',
-  'https://www.pnf.com',
-  'https://pnf.vercel.app',
-  'https://pnf-frontend.vercel.app',
-  'http://localhost:5173',
-  'http://127.0.0.1:5173',
-  'http://localhost:3000',
-  'http://127.0.0.1:3000',
-  'http://localhost:4173',
-  'http://127.0.0.1:4173',
-  'http://localhost:8080',
-  'http://127.0.0.1:8080'
-].filter(Boolean);
 
+
+// ✅ Allowed origins — add all your frontend URLs here
+const allowedOrigins = [
+  "http://localhost:5173",             // Local React dev
+  "http://127.0.0.1:5173",             // Alternative local
+  "https://pnf.vercel.app",            // Frontend deployed on Vercel
+  "https://pnf-frontend.vercel.app",   // Alternate Vercel frontend
+  "https://www.pnf.com",               // Live custom domain
+  "https://pnf.com",                   // Without www
+];
+
+// ✅ CORS configuration
 const corsOptions = {
-  origin: function(origin, callback) {
-    console.log('🔍 CORS Check - Origin:', origin);
-    console.log('🔍 CORS Check - Allowed Origins:', allowedOrigins);
-    
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) {
-      console.log('🔍 CORS Check - No origin, allowing');
+  origin: function (origin, callback) {
+    console.log("🔍 CORS Check — Origin:", origin);
+
+    // Allow requests without origin (like Postman or mobile apps)
+    if (!origin) return callback(null, true);
+
+    const cleanOrigin = origin.replace(/\/$/, ""); // Remove trailing slash
+    if (allowedOrigins.includes(cleanOrigin)) {
+      console.log("✅ CORS Allowed:", cleanOrigin);
       return callback(null, true);
     }
-    
-    const clean = origin.replace(/\/$/, '');
-    console.log('🔍 CORS Check - Clean origin:', clean);
-    
-    // Allow all localhost and 127.0.0.1 ports for development
-    if (clean.includes('localhost') || clean.includes('127.0.0.1')) {
-      console.log('🔍 CORS Check - Localhost detected, allowing');
-      return callback(null, true);
-    }
-    
-    // Check against allowed origins
-    if (allowedOrigins.includes(clean)) {
-      console.log('🔍 CORS Check - Origin allowed:', clean);
-      return callback(null, true);
-    }
-    
-    console.log('❌ CORS blocked origin:', origin);
-    console.log('❌ Clean origin:', clean);
-    console.log('❌ Not in allowed origins list');
-    return callback(new Error('Not allowed by CORS'));
+
+    console.warn("❌ CORS Blocked:", origin);
+    callback(new Error("Not allowed by CORS"));
   },
-  credentials: true,
-  methods: ['GET','POST','PUT','DELETE','OPTIONS'],
+  credentials: true, // Enable cookies and auth headers
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
   allowedHeaders: [
-    'Content-Type',
-    'Accept',
-    'Authorization',
-    'Origin',
-    'X-Requested-With',
-    'email',
-    'password',
-    'X-Owner-Id'
-  ]
+    "Content-Type",
+    "Accept",
+    "Authorization",
+    "Origin",
+    "X-Requested-With",
+    "email",
+    "password",
+    "X-Owner-Id",
+  ],
 };
 
+// ✅ Apply CORS globally
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
 
-// Additional CORS middleware for Vercel deployment
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  console.log('🔍 Additional CORS middleware - Origin:', origin);
-  
-  if (origin && allowedOrigins.includes(origin.replace(/\/$/, ''))) {
-    res.header('Access-Control-Allow-Origin', origin);
-    res.header('Access-Control-Allow-Credentials', 'true');
-    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, Origin, X-Requested-With, email, password, X-Owner-Id');
-  }
-  
-  if (req.method === 'OPTIONS') {
-    console.log('🔍 Handling OPTIONS request');
-    return res.sendStatus(200);
-  }
-  
-  next();
-});
-// Fallback headers for any route not covered (defensive)
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  if (origin && allowedOrigins.includes(origin.replace(/\/$/, ''))) {
-    res.header('Access-Control-Allow-Origin', origin);
-    res.header('Vary', 'Origin');
-    res.header('Access-Control-Allow-Credentials', 'true');
-    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, Origin, X-Requested-With, email, password, X-Owner-Id');
-    if (req.method === 'OPTIONS') return res.sendStatus(204);
-  }
-  next();
-});
-app.use(express.json({ limit: '5mb' }));
+// ✅ Handle preflight requests (important for Vercel)
+app.options("*", cors(corsOptions));
+
+// ✅ Parse JSON body
+app.use(express.json({ limit: "5mb" }));
+
 ///////////
 // Attach io to req
 
@@ -2862,7 +2817,7 @@ app.post("/create-service-checkout-session", async (req, res) => {
     // Retrieve product details based on the paymentMethodId
     const items = [
       {
-        price: process.env.STRIPE_SERVICE_PRICE_ID || "price_1P6bhaH9HQ2Ek1tPWKH1k7WL", // Your product price ID
+        price: process.env.STRIPE_SERVICE_PRICE_ID, // Service price ID from environment
         quantity: 1,
     },
       // Add more items if needed
@@ -2972,7 +2927,7 @@ app.post("/delta-checkout-session", async (req, res) => {
     // Retrieve product details based on the paymentMethodId
     const items = [
       {
-        price: process.env.STRIPE_DELTA_PRICE_ID || "price_1OhHCMH9HQ2Ek1tPDpXnGNlO", // Your product price ID
+        price: process.env.STRIPE_DELTA_PRICE_ID, // Delta price ID from environment
         quantity: 1,
     },
       // Add more items if needed
@@ -7416,9 +7371,9 @@ const expireContentTask = async () => {
       status: { $in: ['verified', 'pending'] } // Include both verified and pending ads
     });
     
-    // Find events that have expired (including admin-verified ones)
+    // Find events that have expired based on end date (including admin-verified ones)
     const expiredEvents = await Event.find({
-      expiresAt: { $lte: now },
+      endDate: { $lte: now },
       status: { $in: ['verified', 'pending'] } // Include both verified and pending events
     });
     
@@ -7449,7 +7404,7 @@ const expireContentTask = async () => {
       
       const eventResult = await Event.updateMany(
         {
-          expiresAt: { $lte: now },
+          endDate: { $lte: now },
           status: { $in: ['verified', 'pending'] }
         },
         { 
@@ -7493,6 +7448,35 @@ function scheduleExpirationTask() {
 }
 
 scheduleExpirationTask();
+
+// ---------------- EVENT EXPIRATION ROUTES ----------------
+
+// Manual event expiration endpoint
+app.post("/api/event/admin/expire-events", async (req, res) => {
+  try {
+    console.log('=== MANUAL EVENT EXPIRATION TRIGGERED ===');
+    await expireContentTask();
+    res.json({ success: true, message: "Event expiration task completed" });
+  } catch (error) {
+    console.error('Error in manual event expiration:', error);
+    res.status(500).json({ success: false, message: "Error expiring events" });
+  }
+});
+
+// Get expired events
+app.get("/api/event/admin/expired", async (req, res) => {
+  try {
+    console.log("Fetching expired events");
+    const expiredEvents = await Event.find({
+      status: 'expired'
+    }).sort({ expiredAt: -1 });
+    
+    res.json({ success: true, data: expiredEvents });
+  } catch (err) {
+    console.error("Error fetching expired events:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
 
 // ---------------- QUERIES ROUTES ----------------
 
