@@ -210,38 +210,13 @@ app.use('/uploads', express.static(uploads_path));
 
 
 // ✅ Allowed origins — add all your frontend URLs here
-// ✅ Allowed frontend & local origins
 const allowedOrigins = [
   "http://localhost:5173",          // Local development
   "http://127.0.0.1:5173",
   "https://www-pnf.com",            // ✅ Your live frontend
   "https://pnf.vercel.app",         // If you also use Vercel preview frontend
-  "https://pnf-backend.vercel.app"  // (optional) backend domain
+  "https://pnf-backend.vercel.app"                   // Without www
 ];
-
-// ✅ Strict & stable CORS configuration
-const corsOptions = {
-  origin: function (origin, callback) {
-    if (!origin) return callback(null, true); // Allow Postman/curl
-    const clean = origin.replace(/\/$/, "");
-    if (allowedOrigins.includes(clean)) {
-      return callback(null, true);
-    }
-    console.error("❌ CORS blocked origin:", origin);
-    return callback(new Error("Not allowed by CORS"));
-  },
-  credentials: true,
-  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-  allowedHeaders: [
-    "Content-Type",
-    "Accept",
-    "Authorization",
-    "Origin",
-    "X-Requested-With",
-    "email",
-    "password",
-  ],
-};
 
 // ✅ CORS configuration
 const corsOptions = {
