@@ -188,23 +188,60 @@ app.use('/uploads', express.static(uploads_path));
 // ✅ Handle preflight requests globally
 app.options("*", cors());
 
+// Additional CORS middleware for development
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    const allowedOrigins = [
+      'http://localhost:5173',
+      'http://localhost:3000',
+      'http://localhost:5174',
+      'https://www-pnf.com',
+      'https://pnf.vercel.app',
+      'https://www-pnf.com',
+      'https://pnf.com'
+    ];
+    
+    // Allow any localhost origin for development
+    if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
+      return callback(null, true);
+    }
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'x-owner-id']
+}));
+
 // ✅ CORS FIX — must come before routes
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   const allowed = [
     "http://localhost:5173",
-  "https://www-pnf.com",              // ✅ your frontend (Hostinger)
-  "https://pnf.vercel.app", 
+    "http://localhost:3000",
+    "http://localhost:5174",
+    "https://www-pnf.com",              // ✅ your frontend (Hostinger)
+    "https://pnf.vercel.app", 
     "https://www-pnf.com",
     "https://pnf.com"
   ];
 
-  if (allowed.includes(origin)) {
+  // Allow all localhost origins for development
+  if (origin && (origin.includes('localhost') || origin.includes('127.0.0.1'))) {
+    res.header("Access-Control-Allow-Origin", origin);
+  } else if (allowed.includes(origin)) {
     res.header("Access-Control-Allow-Origin", origin);
   }
 
   res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
-  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, x-owner-id");
   res.header("Access-Control-Allow-Credentials", "true");
 
   if (req.method === "OPTIONS") {
