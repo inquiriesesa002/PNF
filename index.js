@@ -6057,10 +6057,11 @@ app.post("/api/event/add-event", upload.single("image"), async (req, res) => {
       title: eventTitle,
       startDate: eventDate, 
       endDate: eventEndDate, 
-      time: endTime ? `${time} - ${endTime}` : time, 
+      startTime: time,
+      endTime: endTime || time, // Use endTime if provided, otherwise use startTime
       venue, 
       description, 
-      registrationFee: Math.round(registrationFee * 100), // Convert to cents
+      registrationPrice: Math.round(registrationFee * 100), // Convert to cents
       image: req.file ? req.file.path : null,
       status: req.body.status || "pending",
       expiresAt: expiresAt
@@ -6205,10 +6206,11 @@ app.post("/api/event/add-seller-event", upload.single("image"), async (req, res)
       title: eventTitle,
       startDate: eventDate, 
       endDate: eventEndDate, 
-      time: endTime ? `${time} - ${endTime}` : time, 
+      startTime: time,
+      endTime: endTime || time, // Use endTime if provided, otherwise use startTime
       venue, 
       description, 
-      registrationFee: Math.round(registrationFee * 100), // Convert to cents
+      registrationPrice: Math.round(registrationFee * 100), // Convert to cents
       image: image,
       status: status,
       sellerId: sellerId, // Store sellerId
@@ -6251,6 +6253,7 @@ app.post("/api/event/add-buyer-event", upload.single("image"), async (req, res) 
     // Direct field extraction
     const date = req.body.date;
     const time = req.body.time;
+    const endTime = req.body.endTime || "";
     const venue = req.body.venue;
     const description = req.body.description;
     const title = req.body.title;
@@ -6297,10 +6300,11 @@ app.post("/api/event/add-buyer-event", upload.single("image"), async (req, res) 
       title: eventTitle,
       startDate: eventDate, 
       endDate: eventDate, 
-      time, 
+      startTime: time,
+      endTime: endTime || time, // Use endTime if provided, otherwise use startTime
       venue, 
       description, 
-      registrationFee: Math.round(registrationFee * 100), // Convert to cents
+      registrationPrice: Math.round(registrationFee * 100), // Convert to cents
       image: image,
       status: status,
       userId: userId, // Store userId
