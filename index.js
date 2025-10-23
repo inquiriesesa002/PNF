@@ -1,13 +1,9 @@
-const dotenv = require('dotenv');
-// Load node.env first (may contain placeholders), then load .env to override with real keys
-dotenv.config({ path: __dirname + '/node.env' });
-dotenv.config();
 const verificationStore = {}; // in-memory store for email verification codes
 const { createVerificationEmailTemplate } = require('./emailTemplates');
 const jwt = require('jsonwebtoken');
 
 // JWT Secret Key (in production, use environment variable)
-const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
+const JWT_SECRET = process.env.JWT_SECRET_KEY || process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
 
 // Helper function to generate JWT token with 6 months expiration
 const generateToken = (userId, userType) => {
@@ -29,26 +25,6 @@ const verifyToken = (token) => {
   } catch (error) {
     return null;
   }
-};
-
-// Helper to resolve the frontend base URL for links in emails
-// Priority: explicit env FRONTEND_URL -> request Origin header -> referer origin -> default http://localhost:5173
-const getFrontendBaseUrl = (req) => {
-  let fromEnv = process.env.FRONTEND_URL && process.env.FRONTEND_URL.trim();
-  if (fromEnv) {
-    // Normalize double slashes and trailing slash
-    fromEnv = fromEnv.replace(/\/{2,}/g, '/');
-    if (fromEnv.endsWith('/')) fromEnv = fromEnv.slice(0, -1);
-    return fromEnv;
-  }
-  const origin = (req.headers && (req.headers.origin || req.headers.referer)) || "";
-  try {
-    if (origin) {
-      const url = new URL(origin);
-      return `${url.protocol}//${url.host}`;
-    }
-  } catch (_) {}
-  return "http://localhost:5173";
 };
 
 // Helper function to check and manage free trial for users
@@ -131,39 +107,23 @@ const checkSellerFreeTrial = async (sellerId) => {
 const getEmailConfig = () => ({
   user: process.env.EMAIL_USER || "inquiriesesa@gmail.com",
   pass: process.env.EMAIL_PASS || "dmsfmhyxafbvnbgb",
-  from: process.env.EMAIL_FROM || "Prime Net Farmer <inquiriesesa@gmail.com>"
+  from: process.env.EMAIL_FROM || "AS Soon AS Possible <inquiriesesa@gmail.com>"
 });
-require("dotenv").config({ path: "node.env" });
-require('dotenv').config();
-const ADMIN_ID = "admin@gmail.com"; // only admin
+require("dotenv").config({ path: "node.env", override: true });
+require('dotenv').config({ override: true });
+const ADMIN_ID = "admin@gmail.com"; // Primary admin ID (keeping for backward compatibility)
 const express = require("express");
 const nodemailer = require("nodemailer");
 const path = require("path");
 const bcrypt = require("bcrypt");
 const AppModel = require("./models/App");
 const WorkUpload = require("./models/workupload");
-// Stripe mode diagnostics endpoint
-// This helps verify whether live or test keys are loaded at runtime
-// Safe: only exposes prefix and last 4 for debugging
-try {
-  const express = require("express");
-  if (typeof app !== 'undefined' && app && app.get) {
-    app.get('/stripe-mode', (req, res) => {
-      const pk = process.env.STRIPE_PUBLISHABLE_KEY || '';
-      const sk = process.env.STRIPE_SECRET_KEY || '';
-      const mode = sk.startsWith('sk_live_') ? 'live' : (sk.startsWith('sk_test_') ? 'test' : 'unknown');
-      res.json({
-        mode,
-        publishableKeyPreview: pk ? `${pk.slice(0, 10)}...${pk.slice(-6)}` : '',
-        secretKeyPreview: sk ? `${sk.slice(0, 7)}...${sk.slice(-6)}` : ''
-      });
-    });
-  }
-} catch (_) {}
 //////
 const InformationBox = require("./models/informationBox");
 const Service = require("./models/Service"); // ya sahi path jo aapka model hai
 const Event = require("./models/Event");
+const EventRegistration = require("./models/EventRegistration");
+const UserQuery = require("./models/Query");
 const http = require("http");
 const crypto = require("crypto");
 const SellerModelProfile = require("./models/sellerdetailsmodel");
@@ -196,67 +156,89 @@ const app = express();
 
 app.use(express.urlencoded({ extended: true })); 
 
-const { dbConnection, isConnected } = require("./db/conn");
+const connectDB = require('./db/conn');
 const jwtToken = require("jsonwebtoken");
 const port = process.env.PORT || 3000;
-const static_path = path.join(__dirname, "../public");
+// Serve frontend build (dist) for SPA routes
+// Prefer ./dist inside backend (works on serverless). Fallback to ../dist for local.
+const fs = require('fs');
+const candidateA = path.join(__dirname, 'dist');
+const candidateB = path.join(__dirname, '../dist');
+const static_path = fs.existsSync(path.join(candidateA, 'index.html')) ? candidateA : candidateB;
 app.use(express.static(static_path));
 
 // Serve uploaded files from uploads directory
 const uploads_path = path.join(__dirname, "uploads");
 app.use('/uploads', express.static(uploads_path));
+// CORS configuration for production
+// const corsOptions = {
+//   origin: [
+//     'https://getasapservices.com',
+//     'https://asap-nine-pi.vercel.app',
+//     'http://localhost:3000',
+//     'http://localhost:5173',
+//     'http://127.0.0.1:5500'
+//   ],
+//   credentials: true,
+//   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+//   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+// };
 
-// ✅ Allowed origins — add all your frontend URLs here
-const allowedOrigins = [
-  "http://localhost:5173",
-  "http://127.0.0.1:5173",
-  "https://www-pnf.com",
-  "https://pnf.vercel.app",
-  "https://pnf-backend.vercel.app",
-];
+//app.use(cors(corsOptions));
+// ✅ Handle preflight requests globally
+app.options("*", cors());
 
-// ✅ CORS configuration
-const corsOptions = {
-  origin: function (origin, callback) {
-    console.log("🔍 CORS Check — Origin:", origin);
-    if (!origin) return callback(null, true);
+// ✅ CORS FIX — must come before routes
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  const allowed = [
+    "http://localhost:5173",
+  "https://www-pnf.com",              // ✅ your frontend (Hostinger)
+  "https://pnf.vercel.app", 
+    "https://www-pnf.com",
+    "https://pnf.com"
+  ];
 
-    const cleanOrigin = origin.replace(/\/$/, "");
-    if (allowedOrigins.includes(cleanOrigin)) {
-      console.log("✅ CORS Allowed:", cleanOrigin);
-      return callback(null, true);
-    }
+  if (allowed.includes(origin)) {
+    res.header("Access-Control-Allow-Origin", origin);
+  }
 
-    console.warn("❌ CORS Blocked:", origin);
-    callback(new Error("Not allowed by CORS"));
-  },
-  credentials: true,
-  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-  allowedHeaders: [
-    "Content-Type",
-    "Accept",
-    "Authorization",
-    "Origin",
-    "X-Requested-With",
-    "email",
-    "password",
-    "X-Owner-Id",
-  ],
-};
+  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+  res.header("Access-Control-Allow-Credentials", "true");
 
-// ✅ Apply CORS globally
-app.use(cors(corsOptions));
-app.options("*", cors(corsOptions));
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
+  }
 
-// ✅ Parse JSON
-app.use(express.json({ limit: "5mb" }));
+  next();
+});
 
+
+// Additional CORS headers for all responses
+// app.use((req, res, next) => {
+//   res.header('Access-Control-Allow-Origin', 'https://getasapservices.com');
+//   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+//   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+//   res.header('Access-Control-Allow-Credentials', 'true');
+  
+//   if (req.method === 'OPTIONS') {
+//     res.sendStatus(200);
+//   } else {
+//     next();
+//   }
+// });
+
+app.use(express.json({ limit: '5mb' }));
+app.use(express.urlencoded({ extended: true }));
 ///////////
-
+// Attach io to req
 
 /////////////
+// Root should redirect to the deployed frontend if available
+const FRONTEND_URL = process.env.FRONTEND_URL || "https://asap-nine-pi.vercel.app";
 app.get("/", (req, res) => {
-  res.send("Hello from me");
+  res.redirect(FRONTEND_URL);
 });
 
 // Test endpoint to check Cloudinary configuration
@@ -445,18 +427,18 @@ app.post("/test-send-email", async (req, res) => {
 
     const { htmlTemplate, textTemplate } = createVerificationEmailTemplate("Test User", "123456", email);
 
-    const attachments = (process.env.APP_logopnf_INLINE || "").toLowerCase() === "true" ? [
+    const attachments = (process.env.APP_LOGO_INLINE || "").toLowerCase() === "true" ? [
       {
-        filename: "logopnf.png",
-        path: path.join(__dirname, "../src/assets/logopnf.png"),
-        cid: "app-logopnf"
+        filename: "logo.png",
+        path: path.join(__dirname, "../src/assets/logo.png"),
+        cid: "app-logo"
     }
     ] : [];
 
     await transporter.sendMail({
       from: emailConfig.from,
       to: email,
-      subject: "🔐 Test Email - Prime Net Farmer!",
+      subject: "🔐 Test Email - AS Soon AS Possible!",
       text: textTemplate,
       html: htmlTemplate,
       attachments
@@ -539,7 +521,6 @@ const authenticateToken = (req, res, next) => {
       .status(401)
       .json({ message: "Access denied. Token missing or invalid format." });
   }
-
   const tokenWithoutBearer = token.substring(7); // Remove "Bearer " prefix
 
   try {
@@ -681,8 +662,7 @@ app.post("/seller-signup", async (req, res) => {
 });
 
 
-// Shared handler for sending verification code
-const handleSendVerificationCode = async (req, res) => {
+app.post("/send-verification-code", async (req, res) => {
   const { email, userName = "Valued User" } = req.body;
 
   if (!email) {
@@ -733,21 +713,27 @@ const handleSendVerificationCode = async (req, res) => {
     console.log("Email details:", {
       from: emailConfig.from,
       to: email,
-      subject: "🔐 Verify Your Email - Welcome to Prime Net Farmer!"
+      subject: "🔐 Verify Your Email - Welcome to AS Soon AS Possible!"
   });
     
-    const attachments = (process.env.APP_logopnf_INLINE || "").toLowerCase() === "true" ? [
-      {
-        filename: "logopnf.png",
-        path: path.join(__dirname, "../src/assets/logopnf.png"),
-        cid: "app-logopnf"
+    let attachments = [];
+    if ((process.env.APP_LOGO_INLINE || "").toLowerCase() === "true") {
+      const logoPath = path.join(__dirname, "../src/assets/logo.png");
+      try {
+        if (fs.existsSync(logoPath)) {
+          attachments = [{ filename: "logo.png", path: logoPath, cid: "app-logo" }];
+        } else {
+          console.warn("APP_LOGO_INLINE is true but logo file not found at:", logoPath);
+        }
+      } catch (fsErr) {
+        console.warn("APP_LOGO_INLINE check failed:", fsErr?.message);
+      }
     }
-    ] : [];
     
     const emailResult = await transporter.sendMail({
       from: emailConfig.from,
       to: email,
-      subject: "🔐 Verify Your Email - Welcome to Prime Net Farmer!",
+      subject: "🔐 Verify Your Email - Welcome to AS Soon AS Possible!",
       text: textTemplate,
       html: htmlTemplate,
       attachments
@@ -763,17 +749,15 @@ const handleSendVerificationCode = async (req, res) => {
   } catch (emailError) {
     console.error("Email sending error:", emailError);
     console.error("Error details:", emailError.message);
-    
-    // Even if email fails, the code is already stored, so we can still return success
-    res.json({ 
-      success: true, 
-      message: "Verification code generated successfully! (Email may not have been sent)",
-      code: code, // Return the code for testing if email fails
-      expiresIn: "10 minutes",
-      warning: "Email sending failed, but code is available for verification"
-  });
+    // In production, fail the request so frontend can show an error
+    const exposeCode = (process.env.NODE_ENV !== 'production');
+    return res.status(500).json({ 
+      success: false,
+      message: "Failed to send verification email. Please try again.",
+      ...(exposeCode ? { code } : {}),
+    });
   }
-};
+});
 
 
 
@@ -789,22 +773,18 @@ const { CloudinaryStorage } = require("multer-storage-cloudinary");
 const cloudinary = require("cloudinary").v2;
 const multer = require("multer");
 
-// Cloudinary config with placeholder safety
-const normalizeValue = (v) => (v && !/^(your_|YOUR_)/.test(String(v))) ? v : '';
-const CLOUDINARY_CLOUD_NAME = normalizeValue(process.env.CLOUDINARY_CLOUD_NAME);
-const CLOUDINARY_API_KEY = normalizeValue(process.env.CLOUDINARY_API_KEY);
-const CLOUDINARY_API_SECRET = normalizeValue(process.env.CLOUDINARY_API_SECRET);
-
+// Cloudinary config
 cloudinary.config({
-  cloud_name: CLOUDINARY_CLOUD_NAME,
-  api_key: CLOUDINARY_API_KEY,
-  api_secret: CLOUDINARY_API_SECRET,
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
 // Check if Cloudinary is properly configured
-const isCloudinaryConfigured = Boolean(
-  CLOUDINARY_CLOUD_NAME && CLOUDINARY_API_KEY && CLOUDINARY_API_SECRET
-);
+const isCloudinaryConfigured = process.env.CLOUDINARY_CLOUD_NAME && 
+                               process.env.CLOUDINARY_API_KEY && 
+                               process.env.CLOUDINARY_API_SECRET &&
+                               process.env.CLOUDINARY_CLOUD_NAME !== 'your_cloudinary_cloud_name';
 
 let storage;
 if (isCloudinaryConfigured) {
@@ -813,7 +793,7 @@ if (isCloudinaryConfigured) {
     cloudinary,
     params: {
       folder: "user_ads",
-      allowed_formats: ["jpg", "png", "jpeg"],
+      allowed_formats: ["jpg", "png", "jpeg", "webp"],
     },
   });
 } else {
@@ -855,34 +835,30 @@ app.post("/seller-login", async (req, res) => {
     const trialCompleted = seller.trialCompleted || false;
     const hasActiveSubscription = seller.hasActiveSubscription || false;
     const subscriptionStartDate = seller.subscriptionStartDate;
-    const subscriptionEndDate = seller.subscriptionEndDate;
     const trialStartDate = seller.trialStartDate;
-    const trialEndDate = seller.trialEndDate;
     const trialSelected = seller.trialSelected || false;
 
-    // Check if 6-month trial has expired
+    // Check if 6-month trial has expired (only if trial was selected and started)
     const isTrialExpired = (() => {
       if (!trialSelected || !trialStartDate) return false; // No trial selected yet
       
-      const now = new Date();
-      if (trialEndDate) {
-        return now > new Date(trialEndDate);
-      }
-      
-      // Fallback: calculate 6 months from start date
       const trialStart = new Date(trialStartDate);
       const sixMonthsFromStart = new Date(trialStart);
-      sixMonthsFromStart.setMonth(sixMonthsFromStart.getMonth() + 6);
+      sixMonthsFromStart.setMonth(sixMonthsFromStart.getMonth() + 6); // Add 6 months to start date
       
-      return now > sixMonthsFromStart;
+      const now = new Date();
+      return now > sixMonthsFromStart; // Trial expired if current time is past 6 months from start
     })();
 
     // Check if monthly subscription has expired
-    const isSubscriptionExpired = (() => {
-      if (!hasActiveSubscription || !subscriptionEndDate) return true;
-      const now = new Date();
-      return now > new Date(subscriptionEndDate);
-    })();
+    const checkMonthlySubscriptionExpiry = (subscriptionStartDate) => {
+      if (!subscriptionStartDate) return true;
+      const oneMonthAgo = new Date();
+      oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+      return new Date(subscriptionStartDate) < oneMonthAgo;
+    };
+
+    const isSubscriptionExpired = checkMonthlySubscriptionExpiry(subscriptionStartDate);
 
     // Check account status and deactivate if trial expired
     let accountActive = seller.accountActive !== false; // Default to true if not set
@@ -903,19 +879,6 @@ app.post("/seller-login", async (req, res) => {
       console.log('Account deactivated due to expired trial:', seller._id);
     }
 
-    // Block login if trial expired and no active subscription
-    if (isTrialExpired && !hasActiveSubscription) {
-      return res.status(403).json({ 
-        success: false, 
-        message: "Your 6-month trial has expired. Please pay $10 for 1 month access to continue.",
-        requiresPayment: true,
-        trialExpired: true,
-        trialStartDate: trialStartDate,
-        trialEndDate: trialEndDate,
-        subscriptionRequired: true
-      });
-    }
-
     // Generate JWT token for 6 months
     const token = generateToken(seller._id, "SELLER");
     
@@ -932,17 +895,11 @@ app.post("/seller-login", async (req, res) => {
       trialCompleted: updatedTrialCompleted,
       hasActiveSubscription: hasActiveSubscription && !isSubscriptionExpired,
       subscriptionStartDate: subscriptionStartDate,
-      subscriptionEndDate: subscriptionEndDate,
       isSubscriptionExpired: isSubscriptionExpired,
       trialStartDate: trialStartDate,
-      trialEndDate: trialEndDate,
       isTrialExpired: isTrialExpired,
       accountActive: accountActive,
-      trialSelected: trialSelected,
-      // Additional info for frontend
-      trialDuration: "6 months",
-      subscriptionDuration: "1 month",
-      subscriptionPrice: "$10"
+      trialSelected: trialSelected
     });
   } catch (error) {
     console.error("Login error:", error);
@@ -975,8 +932,8 @@ app.post('/create-subscription-checkout-session', async (req, res) => {
         quantity: 1,
       }],
       mode: 'payment',
-      success_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/subscription-success?sellerId=${sellerId}`,
-      cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/subscription-cancel`,
+      success_url: `https://asap-nine-pi.vercel.app/subscription-success?sellerId=${sellerId}`,
+      cancel_url: `${process.env.FRONTEND_URL || 'https://asap-nine-pi.vercel.app'}/subscription-cancel`,
       metadata: {
         sellerId: sellerId,
         type: 'subscription'
@@ -1015,24 +972,16 @@ app.post('/activate-seller-subscription', async (req, res) => {
       subscriptionEndDate: subscriptionEndDate,
       accountActive: true,
       trialCompleted: true,
-      hasUsedTrial: true,
-      canPostAds: true,
-      canPostEvents: true,
-      postCredits: 10
+      hasUsedTrial: true
     });
     
     console.log('Seller subscription activated:', sellerId);
     
     res.json({
       success: true,
-      message: "Subscription activated successfully for 1 month",
+      message: "Subscription activated successfully",
       subscriptionStartDate: subscriptionStartDate,
-      subscriptionEndDate: subscriptionEndDate,
-      subscriptionDuration: "1 month",
-      subscriptionPrice: "$10",
-      canPostAds: true,
-      canPostEvents: true,
-      postCredits: 10
+      subscriptionEndDate: subscriptionEndDate
     });
   } catch (error) {
     console.error("Activate subscription error:", error);
@@ -1059,37 +1008,24 @@ app.post('/start-free-trial', async (req, res) => {
       return res.status(400).json({ success: false, message: "Free trial already started" });
     }
     
-    // Start the free trial for 6 months
+    // Start the free trial
     const trialStartDate = new Date();
-    const trialEndDate = new Date();
-    trialEndDate.setMonth(trialEndDate.getMonth() + 6); // 6 months from now
-    
     const updatedSeller = await Seller.findByIdAndUpdate(sellerId, {
       trialSelected: true,
       trialStartDate: trialStartDate,
-      trialEndDate: trialEndDate,
       hasUsedTrial: true,
       trialCompleted: false,
-      accountActive: true,
-      canPostAds: true,
-      canPostEvents: true,
-      postCredits: 10
+      accountActive: true
     }, { new: true });
     
-    console.log('6-month free trial started for seller:', sellerId);
-    console.log('Trial start date:', trialStartDate);
-    console.log('Trial end date:', trialEndDate);
+    console.log('Free trial started for seller:', sellerId);
+    console.log('Trial start date set to:', trialStartDate);
     
     res.json({
       success: true,
-      message: "6-month free trial started successfully",
+      message: "Free trial started successfully",
       trialStartDate: trialStartDate.toISOString(),
-      trialEndDate: trialEndDate.toISOString(),
-      trialDuration: "6 months",
-      trialSelected: updatedSeller.trialSelected,
-      canPostAds: true,
-      canPostEvents: true,
-      postCredits: 10
+      trialSelected: updatedSeller.trialSelected
     });
   } catch (error) {
     console.error("Start free trial error:", error);
@@ -1360,7 +1296,7 @@ app.post("/verify-token", async (req, res) => {
 });
 
 //////////////////
-app.post("/logopnfut", (req, res) => {
+app.post("/logout", (req, res) => {
   // Assuming the token is sent in the Authorization header
   const authToken = req.headers.authorization;
 
@@ -1374,7 +1310,7 @@ app.post("/logopnfut", (req, res) => {
   // For example, you might revoke the token, update the user's status, etc.
 
   // Respond with a success message
-  res.status(200).json({ success: true, message: "logopnfut successful" });
+  res.status(200).json({ success: true, message: "Logout successful" });
 });
 app.get("/check-auth", authenticateToken, (req, res) => {
   // If the code reaches here, it means the user is authenticated
@@ -1413,60 +1349,28 @@ app.get("/users", async (req, res) => {
 });
 app.get("/getallsellers", async (req, res) => {
   try {
-    console.log("🔍 Fetching all sellers with populated references");
-    
-    // Populate category, product, and subproduct references - Same as getseller endpoint
-    const allusers = await Seller.find({})
-      .populate("category", "Title name")
-      .populate("product", "name Title")
-      .populate("subproduct", "Title name");
-    
-    console.log("📊 All sellers fetched:", allusers.length);
-    console.log("📊 Sample seller data:", allusers[0] ? {
-      name: allusers[0].Name,
-      subproduct: allusers[0].subproduct,
-      category: allusers[0].category,
-      product: allusers[0].product
-    } : "No sellers found");
-    
+    const allusers = await Seller.find({}); // Query all cities and project only the 'cityname' field
     res.status(200).json(allusers);
   } catch (error) {
-    console.error("❌ Error fetching all sellers:", error);
+    console.error(error);
     res
       .status(500)
-      .json({ message: "An error occurred while fetching sellers" });
+      .json({ message: "An error occurred while fetching cities" });
   }
 });
 app.get("/getseller/:userId", async (req, res) => {
-  console.log("🔍 Fetching seller with populated references")
+  console.log("hy")
   try {
-    const id = req.params.userId;
-    console.log("Seller ID:", id)
     
-    // Populate category, product, and subproduct references
-    const seller = await Seller.findById(id)
-      .populate("category", "Title name")
-      .populate("product", "name Title")
-      .populate("subproduct", "Title name");
-    
-    if (!seller) {
-      return res.status(404).json({ message: "Seller not found" });
-    }
-    
-    console.log("✅ Seller found with populated data:", {
-      name: seller.Name,
-      category: seller.category?.Title || seller.category?.name,
-      product: seller.product?.name || seller.product?.Title,
-      subproduct: seller.subproduct?.Title || seller.subproduct?.name,
-      image: seller.image,
-      profileImage: seller.profileImage,
-      allFields: Object.keys(seller.toObject())
-    });
-    
-    res.status(200).json(seller);
+    const id=req.params.userId;
+    console.log(id)
+    const allusers = await Seller.findById(id); // Query all cities and project only the 'cityname' field
+    res.status(200).json(allusers);
   } catch (error) {
-    console.error("❌ Error fetching seller:", error);
-    res.status(500).json({ message: "An error occurred while fetching seller" });
+    console.error(error);
+    res
+      .status(500)
+      .json({ message: "An error occurred while fetching cities" });
   }
 });
 //////////////////
@@ -2288,7 +2192,7 @@ app.get("/getallsellers/:userId", async (req, res) => {
     res.status(500).json({ success: false, message: "An error occurred" });
   }
 });
-app.post("/api/logopnfut", (req, res) => {
+app.post("/api/logout", (req, res) => {
   const authToken = req.headers.authorization;
 
   if (!authToken) {
@@ -2299,10 +2203,10 @@ app.post("/api/logopnfut", (req, res) => {
     const decoded = jwt.verify(authToken, JWT_SECRET);
     // Additional checks, if needed...
 
-    // If everything is fine, perform logopnfut operations
+    // If everything is fine, perform logout operations
     // ...
 
-    res.status(200).json({ message: "logopnfut successful" });
+    res.status(200).json({ message: "Logout successful" });
   } catch (error) {
     return res.status(401).json({ message: "Unauthorized: Invalid token" });
   }
@@ -2351,7 +2255,7 @@ app.post("/bookings", async (req, res) => {
 
       // Email options
       let mailOptions = {
-        from: process.env.EMAIL_FROM || "Prime Net Farmer <inquiriesesa@gmail.com>",
+        from: process.env.EMAIL_FROM || "inquiriesesa@gmail.com",
         to: req.body.sellerEmail,
         subject: "You Have Recieved A New Booking",
         text: `
@@ -2442,7 +2346,7 @@ app.delete("/bookings/:id", async (req, res) => {
 
       // Email options
       let mailOptions = {
-        from: process.env.EMAIL_FROM || "Prime Net Farmer <inquiriesesa@gmail.com>",
+        from: process.env.EMAIL_FROM || "inquiriesesa@gmail.com",
         to: buyerEmail,
         subject: "Your request has been rejected",
         text: `Dear ${buyerName},
@@ -2500,7 +2404,7 @@ app.patch("/updateBooking/:id" ,async (req,res)=>{
 
     // Email options
     let mailOptions = {
-      from: process.env.EMAIL_FROM || "Prime Net Farmer <inquiriesesa@gmail.com>",
+      from: process.env.EMAIL_FROM || "inquiriesesa@gmail.com",
       to: buyerEmail,
       subject: "Your request has been Accepted",
       text: `Dear ${buyerName},
@@ -2809,7 +2713,7 @@ app.post("/create-service-checkout-session", async (req, res) => {
     // Retrieve product details based on the paymentMethodId
     const items = [
       {
-        price: process.env.STRIPE_SERVICE_PRICE_ID, // Service price ID from environment
+        price: process.env.STRIPE_SERVICE_PRICE_ID || "price_1P6bhaH9HQ2Ek1tPWKH1k7WL", // Your product price ID
         quantity: 1,
     },
       // Add more items if needed
@@ -2904,10 +2808,50 @@ app.get("/success", async (req, res) => {
   }
 });
 
+// Payment success route for Stripe redirects
+app.get("/payment-success", async (req, res) => {
+  try {
+    console.log("Payment Success - Query Parameters:", req.query);
+    const sessionId = req.query.session_id;
+    console.log("Session ID:", sessionId);
+    
+    if (!sessionId) {
+      // Redirect to frontend with error parameter
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://asap-nine-pi.vercel.app'}/#/payment-success?error=missing_session_id`);
+    }
+
+    // Retrieve the session from Stripe to check its payment status
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    console.log("Stripe Session Status:", session.payment_status);
+
+    if (session.payment_status === "paid") {
+      // Handle successful payment
+      console.log("Payment successful for session:", sessionId);
+      
+      // You can add payment processing logic here
+      // For example, update user status, send confirmation email, etc.
+      
+      // Redirect to frontend with success parameters
+      res.redirect(`${process.env.FRONTEND_URL || 'https://asap-nine-pi.vercel.app'}/#/payment-success?session_id=${sessionId}&status=success`);
+    } else {
+      console.log("Payment not completed for session:", sessionId);
+      // Redirect to frontend with error parameters
+      res.redirect(`${process.env.FRONTEND_URL || 'https://asap-nine-pi.vercel.app'}/#/payment-success?session_id=${sessionId}&status=failed`);
+    }
+  } catch (error) {
+    console.error("Error handling payment success:", error);
+    // Fallback redirect if there's an error
+    res.redirect(`${process.env.FRONTEND_URL || 'https://asap-nine-pi.vercel.app'}/#/payment-success?error=processing_error`);
+  }
+});
+
 // Cancel URL endpoint for Stripe Checkout
 app.get("/cancel", (req, res) => {
   res.redirect("http://127.0.0.1:5500/ASSP/index.html"); // Redirect to login page if payment is cancelled
 });
+
+// Payment cancel route for Stripe redirects - REMOVED to prevent redirect loop
+// Stripe should redirect directly to frontend /payment-cancel route
 app.post("/delta-checkout-session", async (req, res) => {
   try {
     console.log("Request received at /create-checkout-session");
@@ -2919,7 +2863,7 @@ app.post("/delta-checkout-session", async (req, res) => {
     // Retrieve product details based on the paymentMethodId
     const items = [
       {
-        price: process.env.STRIPE_DELTA_PRICE_ID, // Delta price ID from environment
+        price: process.env.STRIPE_DELTA_PRICE_ID || "price_1OhHCMH9HQ2Ek1tPDpXnGNlO", // Your product price ID
         quantity: 1,
     },
       // Add more items if needed
@@ -2929,8 +2873,8 @@ app.post("/delta-checkout-session", async (req, res) => {
       payment_method_types: ["card"],
       line_items: items,
       mode: "payment",
-      success_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/payment-success`,
-      cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/payment-cancel`,
+      success_url: `${process.env.FRONTEND_URL || 'https://asap-nine-pi.vercel.app'}/#/payment-success`,
+      cancel_url: `${process.env.FRONTEND_URL || 'https://asap-nine-pi.vercel.app'}/#/payment-cancel`,
   });
 
     console.log("Checkout Session Created:", session);
@@ -3029,7 +2973,7 @@ app.post("/forgotPassword", async (req, res) => {
   });
 
     let mailOptions = {
-      from: process.env.EMAIL_FROM || "Prime Net Farmer <inquiriesesa@gmail.com>",
+      from: process.env.EMAIL_FROM || "inquiriesesa@gmail.com",
       to: email,
       subject: "Password Reset",
       text: `Password: ${user.password}`,
@@ -3712,11 +3656,21 @@ app.put("/api/sellerdetailsprofile/:id", uploadFields, async (req, res) => {
       experience: experienceIncoming
     });
 
-    // Update personal
-    seller.personal = {
-      ...(seller.personal || {}),
-      ...personalIncoming,
-  };
+    // Update personal - use set for subdocuments
+    console.log("🔍 Before update - seller.personal:", seller.personal);
+    console.log("🔍 Incoming personal data:", personalIncoming);
+    
+    // Update each field individually for subdocuments
+    if (personalIncoming.name) seller.personal.name = personalIncoming.name;
+    if (personalIncoming.email) seller.personal.email = personalIncoming.email;
+    if (personalIncoming.contact) seller.personal.contact = personalIncoming.contact;
+    if (personalIncoming.address) seller.personal.address = personalIncoming.address;
+    
+    // Update sellerId and userId at root level if provided
+    if (personalIncoming.sellerId) seller.sellerId = personalIncoming.sellerId;
+    if (personalIncoming.userId) seller.userId = personalIncoming.userId;
+    
+    console.log("🔍 After update - seller.personal:", seller.personal);
 
     // Check if Cloudinary is properly configured
     const isCloudinaryConfigured = process.env.CLOUDINARY_CLOUD_NAME && 
@@ -3773,7 +3727,17 @@ app.put("/api/sellerdetailsprofile/:id", uploadFields, async (req, res) => {
       seller.sellerId = req.body.sellerId;
     }
 
+    console.log("🔍 About to save seller with data:", {
+      personal: seller.personal,
+      education: seller.education,
+      skills: seller.skills,
+      hobbies: seller.hobbies,
+      experience: seller.experience
+    });
+
     const updated = await seller.save();
+    console.log("✅ Seller saved successfully:", updated);
+    
     res.status(200).json({ success: true, message: "Seller details updated", data: updated });
   } catch (error) {
     console.error("Update submission error:", error);
@@ -4102,8 +4066,8 @@ app.post('/create-checkout-session', async (req, res) => {
         },
         quantity: 1,
       }],
-      success_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/payment-cancel`,
+      success_url: `https://asap-nine-pi.vercel.app/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.FRONTEND_URL || 'https://asap-nine-pi.vercel.app'}/#/payment-cancel`,
       client_reference_id: userId,
       customer_email: email,
       metadata: {
@@ -4130,7 +4094,7 @@ app.post('/create-checkout-session', async (req, res) => {
 
 // Create Stripe checkout session for ad posting
 app.post('/create-ad-checkout-session', async (req, res) => {
-  const { userId, email, amount = 100 } = req.body; // $1.00 in cents
+  const { userId, email, amount = 100, duration = 1 } = req.body; // amount in cents, duration in days
   try {
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
@@ -4139,20 +4103,21 @@ app.post('/create-ad-checkout-session', async (req, res) => {
         price_data: {
           currency: 'usd',
           product_data: {
-            name: 'Ad/Event Posting Fee',
-            description: 'Fee for posting one ad or event for one day',
+            name: 'Ad Posting Fee',
+            description: `Fee for posting one ad for ${duration} ${duration === 1 ? 'day' : 'days'}`,
         },
           unit_amount: amount, // Amount in cents
         },
         quantity: 1,
       }],
-      success_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/payment-cancel`,
+      success_url: `https://asap-nine-pi.vercel.app/?payment_success=true&session_id={CHECKOUT_SESSION_ID}&type=ad`,
+      cancel_url: `${process.env.FRONTEND_URL || 'https://asap-nine-pi.vercel.app'}/#/payment-cancel`,
       client_reference_id: userId,
       customer_email: email,
       metadata: {
         userId: userId,
-        type: 'ad_posting'
+        type: 'ad_posting',
+        duration: duration.toString()
     }
   });
 
@@ -4162,6 +4127,7 @@ app.post('/create-ad-checkout-session', async (req, res) => {
       email: email,
       userId: userId,
       amount: amount,
+      duration: duration,
       status: 'pending'
   });
 
@@ -4238,12 +4204,20 @@ app.post('/webhook', bodyParser.raw({ type: 'application/json' }), async (req, r
         await Seller.findByIdAndUpdate(userId, { isPaid: true });
         console.log('Seller marked as paid:', userId);
     } else if (paymentType === 'ad_posting') {
-        // Credit one posting for ads/events
+        // Get payment details from DeltaPayment
+        const paymentRecord = await DeltaPayment.findOne({ sessionId: session.id });
+        const duration = paymentRecord?.duration || 1;
+        
+        // Credit posting with duration tracking
         await User.findByIdAndUpdate(userId, { 
-          $set: { canPostAds: true },
+          $set: { 
+            canPostAds: true,
+            adPostingCredits: duration, // Track how many days of posting credits
+            adPostingExpiresAt: new Date(Date.now() + duration * 24 * 60 * 60 * 1000) // Expires after duration
+          },
           $inc: { postCredits: 1 }
       });
-        console.log('User credited 1 posting:', userId);
+        console.log(`User credited ${duration} days of ad posting:`, userId);
     } else if (paymentType === 'event_posting') {
         // Credit one posting for events
         await User.findByIdAndUpdate(userId, { 
@@ -4276,6 +4250,34 @@ app.get('/api/payments', async (req, res) => {
   }
 });
 
+// Delete payment endpoint
+app.delete('/api/payments/:id', async (req, res) => {
+  try {
+    const paymentId = req.params.id;
+    
+    console.log('=== DELETING PAYMENT DEBUG ===');
+    console.log('Payment ID:', paymentId);
+    
+    // Check if the payment ID is valid
+    if (!mongoose.Types.ObjectId.isValid(paymentId)) {
+      return res.status(400).json({ success: false, message: 'Invalid payment ID' });
+    }
+    
+    // Find and delete the payment
+    const deletedPayment = await DeltaPayment.findByIdAndDelete(paymentId);
+    
+    if (!deletedPayment) {
+      return res.status(404).json({ success: false, message: 'Payment not found' });
+    }
+    
+    console.log('✅ Payment deleted successfully:', deletedPayment);
+    res.json({ success: true, message: 'Payment deleted successfully' });
+  } catch (error) {
+    console.error('❌ Error deleting payment:', error);
+    res.status(500).json({ success: false, message: 'Error deleting payment' });
+  }
+});
+
 // Test endpoint to verify server is working
 app.get('/test-makepayment', (req, res) => {
   console.log('=== TEST ENDPOINT CALLED ===');
@@ -4289,10 +4291,6 @@ app.get('/test-makepayment', (req, res) => {
   }
   });
 });
-
-// Register both legacy and /api routes
-app.post("/send-verification-code", handleSendVerificationCode);
-app.post("/api/send-verification-code", handleSendVerificationCode);
 
 // Test endpoint to verify Stripe keys
 app.get('/test-stripe-keys', async (req, res) => {
@@ -4413,7 +4411,7 @@ app.post('/makepayment', async (req, res) => {
         currency,
         payment_method: paymentMethodId,
         confirm: true,
-        return_url: process.env.FRONTEND_URL || 'http://localhost:5173'
+        return_url: process.env.FRONTEND_URL || 'https://asap-nine-pi.vercel.app'
     });
       
       console.log('Payment intent created and confirmed:', paymentIntent.id, 'Status:', paymentIntent.status);
@@ -4506,28 +4504,27 @@ app.get('/verify-payment/:sessionId', async (req, res) => {
 // Require $1 payment and admin approval
 app.post("/api/post/add-post", upload.single("image"), async (req, res) => {
   try {
-    const { description, userId, sellerId, adminPost, isAdmin, bypassUserCheck } = req.body;
+    const { description, userId, sellerId } = req.body;
     
     console.log('=== AD CREATION REQUEST ===');
-    console.log('Request body:', { description, userId, sellerId, adminPost, isAdmin, bypassUserCheck });
+    console.log('Request body:', { description, userId, sellerId });
     
     // Check if this is an admin post
-    const isAdminPost = adminPost === 'true' || isAdmin === 'true' || bypassUserCheck === 'true';
-    console.log('Is admin post:', isAdminPost);
+    const isAdminPost = req.body.adminPost === 'true' || userId === 'admin';
     
     // Determine if this is a seller or regular user posting
     let poster, isSeller = false;
     
     if (isAdminPost) {
-      console.log('=== ADMIN POST - BYPASSING USER VALIDATION ===');
+      console.log('=== ADMIN POST DETECTED ===');
       // For admin posts, create a mock poster object
       poster = {
         _id: 'admin',
+        name: 'Admin',
         canPostAds: true,
-        postCredits: 999,
-        isAdmin: true
+        postCredits: 999
       };
-      isSeller = false;
+      console.log('Admin poster created');
     } else {
       // First try to find as seller
       if (sellerId) {
@@ -4547,41 +4544,37 @@ app.post("/api/post/add-post", upload.single("image"), async (req, res) => {
           poster = await User.findById(userId).lean();
         }
       }
-      
-      console.log('Final determination - isSeller:', isSeller);
-      console.log('Poster found:', poster ? 'Yes' : 'No');
-      
-      if (!poster) {
-        return res.status(400).json({ success: false, message: "User not found" });
-      }
     }
     
-  // Check payment status for all non-admin posts using User credits (buyers and sellers)
-  if (!isAdminPost) {
-      console.log("=== CHECKING PAYMENT STATUS (UNIFIED) ===");
-      let postingUser = null;
-      // Prefer explicit userId from request; fallback to seller's linked userId if present
-      if (userId) {
-        postingUser = await User.findById(userId).lean();
+    console.log('Final determination - isSeller:', isSeller, 'isAdminPost:', isAdminPost);
+    console.log('Poster found:', poster ? 'Yes' : 'No');
+    
+    if (!poster) {
+      return res.status(400).json({ success: false, message: "User not found" });
+    }
+    
+    // Check payment status for regular users (skip for admin posts)
+    if (!isSeller && !isAdminPost) {
+      console.log("=== CHECKING PAYMENT STATUS ===");
+      console.log("Poster canPostAds:", poster.canPostAds);
+      console.log("Poster postCredits:", poster.postCredits);
+      console.log("Poster adPostingCredits:", poster.adPostingCredits);
+      console.log("Poster adPostingExpiresAt:", poster.adPostingExpiresAt);
+      
+      // Check if user has paid and has credits
+      if (!poster.canPostAds) {
+        return res.status(402).json({ success: false, message: "Payment required. Please pay to post an ad." });
       }
-      if (!postingUser && sellerId) {
-        // Try to find a User document that matches sellerId (some flows use sellerId as userId)
-        postingUser = await User.findById(sellerId).lean();
+      
+      // Check if ad posting credits have expired
+      if (poster.adPostingExpiresAt && new Date() > new Date(poster.adPostingExpiresAt)) {
+        return res.status(402).json({ success: false, message: "Your ad posting credits have expired. Please pay again to post ads." });
       }
-      if (!postingUser) {
-        return res.status(400).json({ success: false, message: "User account not found for credit validation" });
+      
+      if ((poster.postCredits || 0) <= 0) {
+        return res.status(402).json({ success: false, message: "No posting credits. Please pay for posting." });
       }
-
-      console.log("Poster canPostAds:", postingUser.canPostAds);
-      console.log("Poster postCredits:", postingUser.postCredits);
-
-      if (!postingUser.canPostAds) {
-        return res.status(402).json({ success: false, message: "Payment required. Please pay $1 to post an ad." });
-      }
-      if ((postingUser.postCredits || 0) <= 0) {
-        return res.status(402).json({ success: false, message: "No posting credits. Please pay $1 for one posting." });
-      }
-  }
+    }
     
     // Handle image path - convert to web-accessible URL
     let image = null;
@@ -4593,38 +4586,77 @@ app.post("/api/post/add-post", upload.single("image"), async (req, res) => {
         image = `/uploads/${req.file.filename}`;
       }
     }
-    // Ad expires in 1 day
-    const expiresAt = new Date(Date.now() + 24*60*60*1000);
+    // Calculate ad duration and expiration
+    let expiresAt, initialStatus, verifiedUntil = null;
     
-  // All ads are auto-verified for 24 hours, then become unverified
-  let initialStatus = "verified";
-    console.log("=== AD STATUS ===");
-    console.log("Initial status:", initialStatus);
-    console.log("Is admin post:", isAdminPost);
+    if (isAdminPost) {
+      // Admin posts are verified for 30 days
+      expiresAt = new Date(Date.now() + 30*24*60*60*1000);
+      initialStatus = "verified";
+      verifiedUntil = expiresAt;
+    } else if (!isSeller && poster.adPostingCredits > 0) {
+      // User has paid for duration - auto-verify for that duration
+      const durationDays = poster.adPostingCredits;
+      expiresAt = new Date(Date.now() + durationDays * 24*60*60*1000);
+      verifiedUntil = expiresAt;
+      initialStatus = "verified";
+      console.log(`=== AUTO-VERIFYING AD FOR ${durationDays} DAYS ===`);
+    } else {
+      // Default: expires in 1 day, pending status
+      expiresAt = new Date(Date.now() + 24*60*60*1000);
+      initialStatus = "pending";
+    }
+    
+    console.log("=== AD STATUS SETTING ===");
+    console.log("isAdminPost:", isAdminPost, "initialStatus:", initialStatus);
+    console.log("expiresAt:", expiresAt);
+    console.log("verifiedUntil:", verifiedUntil);
     
     // Store userId and sellerId based on who is posting
     const adData = { 
       description, 
       image, 
       status: initialStatus, 
-      expiresAt 
+      expiresAt,
+      verifiedUntil
     };
     
     // Include both fields for now (until model is updated)
-    if (isAdminPost) {
-      // For admin posts, use special admin ID
-      adData.userId = 'admin';
-      adData.sellerId = null;
-      adData.isAdminPost = true;
-      console.log('Setting admin ad data - userId: admin, sellerId: null');
-    } else if (isSeller) {
+    if (isSeller) {
       adData.sellerId = sellerId;
       adData.userId = userId || sellerId; // Use provided userId or fallback to sellerId
       console.log('Setting seller ad data - sellerId:', sellerId, 'userId:', userId || sellerId);
+    } else if (isAdminPost) {
+      adData.userId = 'admin';
+      adData.sellerId = null;
+      console.log('Setting admin ad data - userId: admin');
     } else {
       adData.userId = userId;
       adData.sellerId = sellerId || null; // Use provided sellerId or null
       console.log('Setting user ad data - userId:', userId, 'sellerId:', sellerId || null);
+    }
+    
+    // Add payment tracking for paid ads
+    if (!isSeller && !isAdminPost && poster.adPostingCredits > 0) {
+      // Find the most recent payment for this user
+      const recentPayment = await DeltaPayment.findOne({ 
+        userId: userId, 
+        status: 'completed'
+      }).sort({ completedAt: -1 });
+      
+      // Check if this payment was for ad posting by looking at the session metadata
+      if (recentPayment) {
+        const session = await stripe.checkout.sessions.retrieve(recentPayment.sessionId);
+        if (session.metadata?.type === 'ad_posting') {
+          adData.paymentSessionId = recentPayment.sessionId;
+          adData.paidDuration = recentPayment.duration;
+          adData.paymentAmount = recentPayment.amount;
+          console.log('=== ADDING PAYMENT TRACKING ===');
+          console.log('Payment session:', recentPayment.sessionId);
+          console.log('Paid duration:', recentPayment.duration);
+          console.log('Payment amount:', recentPayment.amount);
+        }
+      }
     }
     
     console.log('=== CREATING AD ===');
@@ -4643,14 +4675,10 @@ app.post("/api/post/add-post", upload.single("image"), async (req, res) => {
       createdAt: savedAd.createdAt
     });
     
-  // consume one credit for all non-admin posts
-  if (!isAdminPost) {
-      // decrement against the posting user account
-      const targetUserId = userId || sellerId;
-      if (targetUserId) {
-        await User.findByIdAndUpdate(targetUserId, { $inc: { postCredits: -1 } });
-      }
-  }
+    // consume one credit (only for regular users, not admin posts)
+    if (!isSeller && !isAdminPost) {
+      await User.findByIdAndUpdate(userId, { $inc: { postCredits: -1 } });
+    }
     
     res.status(201).json({ success: true, data: ad });
   } catch (err) {
@@ -4768,7 +4796,7 @@ app.put("/api/post/posts/:id", upload.single("image"), async (req, res) => {
     
     // Check if this is an admin request
     const { email, password } = req.headers;
-    const isAdmin = email === ADMIN_EMAIL && password === ADMIN_PASSWORD;
+    const isAdmin = ADMIN_EMAILS.includes(email) && password === ADMIN_PASSWORD;
     
     if (isAdmin) {
       console.log('Admin update request detected');
@@ -4823,7 +4851,7 @@ app.delete("/api/post/posts/:id", async (req, res) => {
     
     // Check if this is an admin request
     const { email, password } = req.headers;
-    const isAdmin = email === ADMIN_EMAIL && password === ADMIN_PASSWORD;
+    const isAdmin = ADMIN_EMAILS.includes(email) && password === ADMIN_PASSWORD;
     
     if (isAdmin) {
       console.log('Admin delete request detected');
@@ -4952,10 +4980,10 @@ app.post("/admin/update-stripe-config", async (req, res) => {
       });
     }
     
-    if (!secretKey || !secretKey.startsWith('sk_')) {
+    if (!secretKey || !(secretKey.startsWith('sk_') || secretKey.startsWith('rk_'))) {
       return res.status(400).json({ 
         success: false, 
-        message: 'Invalid secret key format' 
+        message: 'Invalid secret key format (must start with sk_ or rk_)' 
       });
     }
     
@@ -5587,8 +5615,8 @@ app.post("/forgot-password-seller", async (req, res) => {
 
     // Send email
     const transporter = createTransporter();
-    const frontendUrl = getFrontendBaseUrl(req);
-    const resetUrl = `${frontendUrl}/reset-password/${token}`;
+    const frontendUrl = process.env.FRONTEND_URL || 'https://asap-nine-pi.vercel.app';
+    const resetUrl = `${frontendUrl.replace(/\/$/, '')}/#/reset-password/${token}`;
     const mailOptions = {
       from: process.env.EMAIL_USER,
       to: email,
@@ -5596,14 +5624,9 @@ app.post("/forgot-password-seller", async (req, res) => {
       text: `Click the link to reset your seller password:\n\n${resetUrl}\n\nThis link expires in 1 hour.`,
   };
 
-    transporter.sendMail(mailOptions, (err, info) => {
-      if (err) {
-        console.error("Error sending email:", err);
-        return res.json({ status: false, message: "Error sending email", error: err.toString() });
-    }
-      console.log("Email sent:", info.response);
-      res.json({ status: true, message: "Password reset email sent to seller" });
-  });
+    const info = await transporter.sendMail(mailOptions);
+    console.log("Email sent:", info.response);
+    res.json({ status: true, message: "Password reset email sent to seller" });
   } catch (error) {
     console.error("Forgot password error:", error);
     res.json({ status: false, message: "Internal server error", error: error.toString() });
@@ -5633,8 +5656,8 @@ app.post("/forgot-password-buyer", async (req, res) => {
 
     // Send email
     const transporter = createTransporter();
-    const frontendUrl = getFrontendBaseUrl(req);
-    const resetUrl = `${frontendUrl}/reset-password/${token}`;
+    const frontendUrl = process.env.FRONTEND_URL || 'https://asap-nine-pi.vercel.app';
+    const resetUrl = `${frontendUrl.replace(/\/$/, '')}/#/reset-password/${token}`;
     const mailOptions = {
       from: process.env.EMAIL_USER,
       to: email,
@@ -5642,14 +5665,9 @@ app.post("/forgot-password-buyer", async (req, res) => {
       text: `Click the link to reset your buyer password:\n\n${resetUrl}\n\nThis link expires in 1 hour.`,
   };
 
-    transporter.sendMail(mailOptions, (err, info) => {
-      if (err) {
-        console.error("Error sending email:", err);
-        return res.json({ status: false, message: "Error sending email", error: err.toString() });
-    }
-      console.log("Email sent:", info.response);
-      res.json({ status: true, message: "Password reset email sent to buyer" });
-  });
+    const info = await transporter.sendMail(mailOptions);
+    console.log("Email sent:", info.response);
+    res.json({ status: true, message: "Password reset email sent to buyer" });
   } catch (error) {
     console.error("Forgot password error:", error);
     res.json({ status: false, message: "Internal server error", error: error.toString() });
@@ -5687,8 +5705,8 @@ app.post("/forgot-password", async (req, res) => {
 
     // Send email
     const transporter = createTransporter();
-    const frontendUrl = getFrontendBaseUrl(req);
-    const resetUrl = `${frontendUrl}/reset-password/${token}`;
+    const frontendUrl = process.env.FRONTEND_URL || 'https://asap-nine-pi.vercel.app';
+    const resetUrl = `${frontendUrl.replace(/\/$/, '')}/#/reset-password/${token}`;
     const mailOptions = {
       from: process.env.EMAIL_USER,
       to: email,
@@ -5696,14 +5714,9 @@ app.post("/forgot-password", async (req, res) => {
       text: `Click the link to reset your password:\n\n${resetUrl}\n\nThis link expires in 1 hour.\n\nUser Type: ${userType}`,
   };
 
-    transporter.sendMail(mailOptions, (err, info) => {
-      if (err) {
-        console.error("Error sending email:", err);
-        return res.json({ status: false, message: "Error sending email", error: err.toString() });
-    }
-      console.log("Email sent:", info.response);
-      res.json({ status: true, message: "Password reset email sent", userType: userType });
-  });
+    const info = await transporter.sendMail(mailOptions);
+    console.log("Email sent:", info.response);
+    res.json({ status: true, message: "Password reset email sent", userType: userType });
   } catch (error) {
     console.error("Forgot password error:", error);
     res.json({ status: false, message: "Internal server error", error: error.toString() });
@@ -5784,12 +5797,17 @@ app.get("/check-token/:token", async (req, res) => {
 ////////////////////////////////////////////
 //////Events/////////////////////
 // ---------------- ADMIN MIDDLEWARE ----------------
-const ADMIN_EMAIL = "admin@gmail.com";
-const ADMIN_PASSWORD = "ADMIN";
+const ADMIN_EMAILS = [
+  "admin@gmail.com",
+  "eservices908@gmail.com", 
+  "sufianali122nb@gmail.com",
+  "inquiriesesa@gmail.com"
+];
+const ADMIN_PASSWORD = "admin1234@$";
 
 const adminAuth = (req, res, next) => {
   const { email, password } = req.headers;
-  if (email === ADMIN_EMAIL && password === ADMIN_PASSWORD) {
+  if (ADMIN_EMAILS.includes(email) && password === ADMIN_PASSWORD) {
     req.isAdmin = true;
     next();
   } else {
@@ -5798,9 +5816,39 @@ const adminAuth = (req, res, next) => {
 };
 // ---------------- USER + ADMIN ROUTES ----------------
 
-// Models used in event registration
-const EventRegistration = require('./models/EventRegistration');
-const Query = require('./models/Query');
+// Admin login endpoint
+app.post("/admin-login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Email and password are required" 
+      });
+    }
+
+    // Check if email is in admin list and password matches
+    if (ADMIN_EMAILS.includes(email) && password === ADMIN_PASSWORD) {
+      res.json({ 
+        success: true, 
+        message: "Admin login successful",
+        adminEmail: email
+      });
+    } else {
+      res.status(401).json({ 
+        success: false, 
+        message: "Invalid email or password" 
+      });
+    }
+  } catch (error) {
+    console.error("Admin login error:", error);
+    res.status(500).json({ 
+      success: false, 
+      message: "Internal server error" 
+    });
+  }
+});
 
 // Test route to check form data parsing
 app.post("/api/event/test", async (req, res) => {
@@ -5859,49 +5907,37 @@ app.post("/api/event/add-event", upload.single("image"), async (req, res) => {
     console.log("req.body keys:", Object.keys(req.body));
     console.log("req.body.title:", req.body.title);
     console.log("req.body.description:", req.body.description);
-    console.log("req.body.startDate:", req.body.startDate);
-    console.log("req.body.endDate:", req.body.endDate);
-    console.log("req.body.startTime:", req.body.startTime);
-    console.log("req.body.endTime:", req.body.endTime);
+    console.log("req.body.date:", req.body.date);
+    console.log("req.body.time:", req.body.time);
     console.log("req.body.venue:", req.body.venue);
     console.log("req.body.userId:", req.body.userId);
-    console.log("req.body.status:", req.body.status);
+    console.log("req.body.registrationFee:", req.body.registrationFee);
     console.log("Content-Type:", req.get('Content-Type'));
     console.log("Request method:", req.method);
     
-    // Direct field extraction
-    const startDate = req.body.startDate;
-    const endDate = req.body.endDate;
-    const startTime = req.body.startTime;
-    const endTime = req.body.endTime;
+    // Direct field extraction (support new and legacy field names)
+    const date = req.body.startDate || req.body.date;
+    const endDateRaw = req.body.endDate || req.body.startDate || req.body.date;
+    const time = req.body.startTime || req.body.time;
+    const endTime = req.body.endTime || "";
     const venue = req.body.venue;
     const description = req.body.description;
     const title = req.body.title;
     const userId = req.body.userId;
     const status = req.body.status || "pending";
+    const registrationFee = parseFloat(req.body.registrationFee) || 0;
 
-    // Check free trial or payment requirement (skip for admin)
-    if (userId && userId !== "admin") {
-      const trialCheck = await checkFreeTrial(userId);
-      if (!trialCheck.canPost) {
-        return res.status(402).json({ success: false, message: trialCheck.message });
-      }
-      console.log("Free trial check:", trialCheck.message);
-    }
-    
-    console.log("Direct extraction:", { startDate, endDate, startTime, endTime, venue, description, title });
+    console.log("Direct extraction:", { startDate: date, endDate: endDateRaw, startTime: time, endTime, venue, description, title });
 
     // Validate required fields
     console.log("Field validation check:");
-    console.log("startDate:", startDate, "valid:", !!startDate);
-    console.log("endDate:", endDate, "valid:", !!endDate);
-    console.log("startTime:", startTime, "valid:", !!startTime);
-    console.log("endTime:", endTime, "valid:", !!endTime);
+    console.log("date:", date, "valid:", !!date);
+    console.log("time:", time, "valid:", !!time);
     console.log("venue:", venue, "valid:", !!venue);
     console.log("description:", description, "valid:", !!description);
     
-    if (!startDate || !endDate || !startTime || !endTime || !venue || !description) {
-      console.log("Missing fields:", { startDate: !!startDate, endDate: !!endDate, startTime: !!startTime, endTime: !!endTime, venue: !!venue, description: !!description });
+    if (!date || !time || !venue || !description) {
+      console.log("Missing fields:", { date: !!date, time: !!time, venue: !!venue, description: !!description });
       return res.status(400).json({ 
         success: false, 
         message: "Missing required fields" 
@@ -5911,48 +5947,105 @@ app.post("/api/event/add-event", upload.single("image"), async (req, res) => {
     // Generate title from description
     const eventTitle = title || description.substring(0, 50) || "Event";
     
-    // Parse dates
-    const eventStartDate = new Date(startDate);
-    const eventEndDate = new Date(endDate);
-    if (isNaN(eventStartDate.getTime()) || isNaN(eventEndDate.getTime())) {
+    // Parse date
+    const eventDate = new Date(date);
+    if (isNaN(eventDate.getTime())) {
       return res.status(400).json({ 
         success: false, 
         message: "Invalid date format" 
     });
   }
+    const eventEndDate = endDateRaw ? new Date(endDateRaw) : eventDate;
+    if (isNaN(eventEndDate.getTime())) {
+      return res.status(400).json({ success:false, message: "Invalid endDate format" });
+    }
+    
+    // Check if this is an admin event
+    const isAdminEvent = req.body.status === "verified" || req.body.userId === "admin" || req.body.adminUpdate === "true";
+    
+    // Calculate expiration based on event's actual end date and time
+    let expiresAt;
+    
+    if (endTime && endTime.trim() !== "") {
+      // If end time is provided, use end date + end time
+      const [hours, minutes] = endTime.split(':').map(Number);
+      const endDateTime = new Date(eventEndDate);
+      endDateTime.setHours(hours, minutes, 0, 0);
+      expiresAt = endDateTime;
+    } else if (time && time.includes('-')) {
+      // If time range is provided (e.g., "2:00 PM - 5:00 PM")
+      const timeParts = time.split('-');
+      if (timeParts.length === 2) {
+        const endTimeStr = timeParts[1].trim();
+        // Parse end time (handle both 12-hour and 24-hour format)
+        let endHours, endMinutes;
+        if (endTimeStr.includes('AM') || endTimeStr.includes('PM')) {
+          // 12-hour format
+          const [timePart, period] = endTimeStr.replace(/\s+/g, ' ').split(' ');
+          const [h, m] = timePart.split(':').map(Number);
+          endHours = period === 'AM' ? (h === 12 ? 0 : h) : (h === 12 ? 12 : h + 12);
+          endMinutes = m || 0;
+        } else {
+          // 24-hour format
+          const [h, m] = endTimeStr.split(':').map(Number);
+          endHours = h;
+          endMinutes = m || 0;
+        }
+        const endDateTime = new Date(eventEndDate);
+        endDateTime.setHours(endHours, endMinutes, 0, 0);
+        expiresAt = endDateTime;
+      } else {
+        // Fallback to start date + 3 hours if can't parse end time
+        expiresAt = new Date(eventDate.getTime() + 3*60*60*1000);
+      }
+    } else {
+      // If no end time, add 3 hours to start time as default
+      const startDateTime = new Date(eventDate);
+      if (time) {
+        const [hours, minutes] = time.split(':').map(Number);
+        startDateTime.setHours(hours, minutes, 0, 0);
+      }
+      expiresAt = new Date(startDateTime.getTime() + 3*60*60*1000);
+    }
+    
+    // Ensure expiration is not in the past
+    const now = new Date();
+    if (expiresAt < now) {
+      // If calculated expiration is in the past, set to 24 hours from now
+      expiresAt = new Date(now.getTime() + 24*60*60*1000);
+    }
     
     // Create event with ALL required fields
     const event = new Event({ 
       title: eventTitle,
-      startDate: eventStartDate, 
+      startDate: eventDate, 
       endDate: eventEndDate, 
-      startTime, 
-      endTime,
+      time: endTime ? `${time} - ${endTime}` : time, 
       venue, 
       description, 
+      registrationFee: Math.round(registrationFee * 100), // Convert to cents
       image: req.file ? req.file.path : null,
       status: req.body.status || "pending",
-      expiresAt: new Date(Date.now() + 24*60*60*1000)
+      expiresAt: expiresAt
   });
     
     console.log("Creating event with:", {
       title: eventTitle,
-      startDate: eventStartDate,
+      startDate: eventDate,
       endDate: eventEndDate,
-      startTime,
-      endTime,
+      time: endTime ? `${time} - ${endTime}` : time,
       venue,
       description,
+      registrationFee: Math.round(registrationFee * 100),
       image: req.file ? req.file.path : null,
-      status: status
+      status: status,
+      isAdminEvent: isAdminEvent,
+      expiresAt: expiresAt,
+      expiresAtFormatted: expiresAt.toLocaleString()
     });
     
     await event.save();
     console.log("Event saved successfully!");
-    // consume one credit if available (skip for admin)
-    if (userId && userId !== "admin") {
-      await User.findByIdAndUpdate(userId, { $inc: { postCredits: -1 } });
-    }
     res.status(201).json({ success: true, data: event });
   } catch (err) {
     console.error("Error:", err.message);
@@ -5963,33 +6056,28 @@ app.post("/api/event/add-event", upload.single("image"), async (req, res) => {
 // Add Event for Sellers - Dedicated API
 app.post("/api/event/add-seller-event", upload.single("image"), async (req, res) => {
   try {
-    console.log("🚀 === SELLER EVENT CREATION DEBUG ===");
-    console.log("🔍 Request Origin:", req.headers.origin);
-    console.log("🔍 Request Method:", req.method);
-    console.log("🔍 Request URL:", req.url);
-    console.log("🔍 req.body:", req.body);
-    console.log("🔍 req.file:", req.file);
-    console.log("🔍 req.body keys:", Object.keys(req.body));
+    console.log("=== SELLER EVENT CREATION DEBUG ===");
+    console.log("req.body:", req.body);
+    console.log("req.file:", req.file);
+    console.log("req.body keys:", Object.keys(req.body));
     
-    // Direct field extraction
-    const startDate = req.body.startDate;
-    const endDate = req.body.endDate;
-    const startTime = req.body.startTime;
-    const endTime = req.body.endTime;
+    // Direct field extraction (support new & legacy)
+    const date = req.body.startDate || req.body.date;
+    const endDateRaw = req.body.endDate || req.body.startDate || req.body.date;
+    const time = req.body.startTime || req.body.time;
+    const endTime = req.body.endTime || "";
     const venue = req.body.venue;
     const description = req.body.description;
     const title = req.body.title;
     const sellerId = req.body.sellerId;
     const status = req.body.status || "pending";
+    const registrationFee = parseFloat(req.body.registrationFee) || 0;
 
-    // Skip payment check for event posting - events should be free to post
-    console.log("Seller event posting - no payment required");
-    
-    console.log("Seller event extraction:", { startDate, endDate, startTime, endTime, venue, description, title, sellerId });
+    console.log("Seller event extraction:", { date, time, endTime, venue, description, title, sellerId });
 
     // Validate required fields
-    if (!startDate || !endDate || !startTime || !endTime || !venue || !description) {
-      console.log("Missing fields:", { startDate: !!startDate, endDate: !!endDate, startTime: !!startTime, endTime: !!endTime, venue: !!venue, description: !!description });
+    if (!date || !time || !venue || !description) {
+      console.log("Missing fields:", { date: !!date, time: !!time, venue: !!venue, description: !!description });
       return res.status(400).json({ 
         success: false, 
         message: "Missing required fields" 
@@ -5999,14 +6087,17 @@ app.post("/api/event/add-seller-event", upload.single("image"), async (req, res)
     // Generate title from description
     const eventTitle = title || description.substring(0, 50) || "Event";
     
-    // Parse dates
-    const eventStartDate = new Date(startDate);
-    const eventEndDate = new Date(endDate);
-    if (isNaN(eventStartDate.getTime()) || isNaN(eventEndDate.getTime())) {
+    // Parse date
+    const eventDate = new Date(date);
+    if (isNaN(eventDate.getTime())) {
       return res.status(400).json({ 
         success: false, 
         message: "Invalid date format" 
       });
+    }
+    const eventEndDate = endDateRaw ? new Date(endDateRaw) : eventDate;
+    if (isNaN(eventEndDate.getTime())) {
+      return res.status(400).json({ success: false, message: "Invalid endDate format" });
     }
     
     // Handle image path - convert to web-accessible URL
@@ -6020,41 +6111,90 @@ app.post("/api/event/add-seller-event", upload.single("image"), async (req, res)
       }
     }
 
+    // Calculate expiration based on event's actual end date and time
+    let expiresAt;
+    
+    if (endTime && endTime.trim() !== "") {
+      // If end time is provided, use end date + end time
+      const [hours, minutes] = endTime.split(':').map(Number);
+      const endDateTime = new Date(eventEndDate);
+      endDateTime.setHours(hours, minutes, 0, 0);
+      expiresAt = endDateTime;
+    } else if (time && time.includes('-')) {
+      // If time range is provided (e.g., "2:00 PM - 5:00 PM")
+      const timeParts = time.split('-');
+      if (timeParts.length === 2) {
+        const endTimeStr = timeParts[1].trim();
+        // Parse end time (handle both 12-hour and 24-hour format)
+        let endHours, endMinutes;
+        if (endTimeStr.includes('AM') || endTimeStr.includes('PM')) {
+          // 12-hour format
+          const [timePart, period] = endTimeStr.replace(/\s+/g, ' ').split(' ');
+          const [h, m] = timePart.split(':').map(Number);
+          endHours = period === 'AM' ? (h === 12 ? 0 : h) : (h === 12 ? 12 : h + 12);
+          endMinutes = m || 0;
+        } else {
+          // 24-hour format
+          const [h, m] = endTimeStr.split(':').map(Number);
+          endHours = h;
+          endMinutes = m || 0;
+        }
+        const endDateTime = new Date(eventEndDate);
+        endDateTime.setHours(endHours, endMinutes, 0, 0);
+        expiresAt = endDateTime;
+      } else {
+        // Fallback to start date + 3 hours if can't parse end time
+        expiresAt = new Date(eventDate.getTime() + 3*60*60*1000);
+      }
+    } else {
+      // If no end time, add 3 hours to start time as default
+      const startDateTime = new Date(eventDate);
+      if (time) {
+        const [hours, minutes] = time.split(':').map(Number);
+        startDateTime.setHours(hours, minutes, 0, 0);
+      }
+      expiresAt = new Date(startDateTime.getTime() + 3*60*60*1000);
+    }
+    
+    // Ensure expiration is not in the past
+    const now = new Date();
+    if (expiresAt < now) {
+      // If calculated expiration is in the past, set to 24 hours from now
+      expiresAt = new Date(now.getTime() + 24*60*60*1000);
+    }
+
     // Create event with sellerId
     const event = new Event({ 
       title: eventTitle,
-      startDate: eventStartDate, 
+      startDate: eventDate, 
       endDate: eventEndDate, 
-      startTime, 
-      endTime,
+      time: endTime ? `${time} - ${endTime}` : time, 
       venue, 
       description, 
+      registrationFee: Math.round(registrationFee * 100), // Convert to cents
       image: image,
       status: status,
       sellerId: sellerId, // Store sellerId
-      expiresAt: new Date(Date.now() + 24*60*60*1000)
+      expiresAt: expiresAt
     });
     
     console.log("Creating seller event with:", {
       title: eventTitle,
-      startDate: eventStartDate,
+      startDate: eventDate,
       endDate: eventEndDate,
-      startTime,
-      endTime,
+      time: endTime ? `${time} - ${endTime}` : time,
       venue,
       description,
-      image: req.file ? req.file.path : null,
+      registrationFee: Math.round(registrationFee * 100),
+      image: image,
       status: status,
-      sellerId: sellerId
+      sellerId: sellerId,
+      expiresAt: expiresAt,
+      expiresAtFormatted: expiresAt.toLocaleString()
     });
     
     await event.save();
     console.log("Seller event saved successfully!");
-    
-    // consume one credit if available (skip for admin)
-    if (sellerId && sellerId !== "admin") {
-      await User.findByIdAndUpdate(sellerId, { $inc: { postCredits: -1 } });
-    }
     
     res.status(201).json({ success: true, data: event });
   } catch (err) {
@@ -6072,24 +6212,20 @@ app.post("/api/event/add-buyer-event", upload.single("image"), async (req, res) 
     console.log("req.body keys:", Object.keys(req.body));
     
     // Direct field extraction
-    const startDate = req.body.startDate;
-    const endDate = req.body.endDate;
-    const startTime = req.body.startTime;
-    const endTime = req.body.endTime;
+    const date = req.body.date;
+    const time = req.body.time;
     const venue = req.body.venue;
     const description = req.body.description;
     const title = req.body.title;
     const userId = req.body.userId;
     const status = req.body.status || "pending";
+    const registrationFee = parseFloat(req.body.registrationFee) || 0;
 
-    // Skip payment check for event posting - events should be free to post
-    console.log("Buyer event posting - no payment required");
-    
-    console.log("Buyer event extraction:", { startDate, endDate, startTime, endTime, venue, description, title, userId });
+    console.log("Buyer event extraction:", { date, time, venue, description, title, userId });
 
     // Validate required fields
-    if (!startDate || !endDate || !startTime || !endTime || !venue || !description) {
-      console.log("Missing fields:", { startDate: !!startDate, endDate: !!endDate, startTime: !!startTime, endTime: !!endTime, venue: !!venue, description: !!description });
+    if (!date || !time || !venue || !description) {
+      console.log("Missing fields:", { date: !!date, time: !!time, venue: !!venue, description: !!description });
       return res.status(400).json({ 
         success: false, 
         message: "Missing required fields" 
@@ -6099,10 +6235,9 @@ app.post("/api/event/add-buyer-event", upload.single("image"), async (req, res) 
     // Generate title from description
     const eventTitle = title || description.substring(0, 50) || "Event";
     
-    // Parse dates
-    const eventStartDate = new Date(startDate);
-    const eventEndDate = new Date(endDate);
-    if (isNaN(eventStartDate.getTime()) || isNaN(eventEndDate.getTime())) {
+    // Parse date
+    const eventDate = new Date(date);
+    if (isNaN(eventDate.getTime())) {
       return res.status(400).json({ 
         success: false, 
         message: "Invalid date format" 
@@ -6123,12 +6258,12 @@ app.post("/api/event/add-buyer-event", upload.single("image"), async (req, res) 
     // Create event with userId
     const event = new Event({ 
       title: eventTitle,
-      startDate: eventStartDate, 
-      endDate: eventEndDate, 
-      startTime, 
-      endTime,
+      startDate: eventDate, 
+      endDate: eventDate, 
+      time, 
       venue, 
       description, 
+      registrationFee: Math.round(registrationFee * 100), // Convert to cents
       image: image,
       status: status,
       userId: userId, // Store userId
@@ -6137,12 +6272,12 @@ app.post("/api/event/add-buyer-event", upload.single("image"), async (req, res) 
     
     console.log("Creating buyer event with:", {
       title: eventTitle,
-      startDate: eventStartDate,
-      endDate: eventEndDate,
-      startTime,
-      endTime,
+      startDate: eventDate,
+      endDate: eventDate,
+      time,
       venue,
       description,
+      registrationFee: Math.round(registrationFee * 100),
       image: req.file ? req.file.path : null,
       status: status,
       userId: userId
@@ -6151,15 +6286,43 @@ app.post("/api/event/add-buyer-event", upload.single("image"), async (req, res) 
     await event.save();
     console.log("Buyer event saved successfully!");
     
-    // consume one credit if available (skip for admin)
-    if (userId && userId !== "admin") {
-      await User.findByIdAndUpdate(userId, { $inc: { postCredits: -1 } });
-    }
-    
     res.status(201).json({ success: true, data: event });
   } catch (err) {
     console.error("Buyer event error:", err.message);
     res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Event Registration: create
+app.post("/api/event/register", async (req, res) => {
+  try {
+    const { eventId, name, email, contact, amount, sessionId } = req.body;
+    if (!eventId || !name || !email || !contact) {
+      return res.status(400).json({ success: false, message: "Missing required fields" });
+    }
+    const registration = await EventRegistration.create({
+      eventId,
+      name,
+      email,
+      contact,
+      amount: Number(amount || 0),
+      sessionId
+    });
+    return res.status(201).json({ success: true, data: registration });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Event Registration: list (admin)
+app.get("/api/event/registrations", async (req, res) => {
+  try {
+    const { eventId } = req.query;
+    const query = eventId ? { eventId } : {};
+    const regs = await EventRegistration.find(query).sort({ createdAt: -1 }).lean();
+    return res.json({ success: true, data: regs });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
   }
 });
 
@@ -6276,22 +6439,95 @@ app.get("/api/seller/free-trial-status/:sellerId", async (req, res) => {
 // Update event
 app.put("/api/event/events/:id", upload.single("image"), async (req, res) => {
   try {
-    const { startDate, endDate, startTime, endTime, venue, description, title } = req.body;
-    const updateData = { };
-
-    if (typeof startTime !== 'undefined') updateData.startTime = startTime;
-    if (typeof endTime !== 'undefined') updateData.endTime = endTime;
-    if (typeof venue !== 'undefined') updateData.venue = venue;
-    if (typeof description !== 'undefined') updateData.description = description;
+    console.log("=== EVENT UPDATE DEBUG ===");
+    console.log("Event ID:", req.params.id);
+    console.log("Request body:", req.body);
+    console.log("File uploaded:", !!req.file);
+    
+    const { date, startDate, endDate, time, startTime, endTime, venue, description, title, registrationFee } = req.body;
+    const updateData = { venue, description };
     
     // Handle date field mapping
+    // Prefer explicit startDate/endDate; fallback to legacy single date
+    let eventStartDate, eventEndDate;
     if (startDate) {
-      const eventStartDate = new Date(startDate);
-      updateData.startDate = eventStartDate;
+      const sd = new Date(startDate);
+      if (!isNaN(sd.getTime())) {
+        updateData.startDate = sd;
+        eventStartDate = sd;
+      }
     }
     if (endDate) {
-      const eventEndDate = new Date(endDate);
-      updateData.endDate = eventEndDate;
+      const ed = new Date(endDate);
+      if (!isNaN(ed.getTime())) {
+        updateData.endDate = ed;
+        eventEndDate = ed;
+      }
+    }
+    if (date && (!updateData.startDate || !updateData.endDate)) {
+      const d = new Date(date);
+      if (!isNaN(d.getTime())) {
+        if (!updateData.startDate) {
+          updateData.startDate = d;
+          eventStartDate = d;
+        }
+        if (!updateData.endDate) {
+          updateData.endDate = d;
+          eventEndDate = d;
+        }
+      }
+    }
+
+    // Handle time fields (combine start and end time if provided)
+    const mergedStartTime = startTime || time;
+    if (mergedStartTime) {
+      updateData.time = endTime ? `${mergedStartTime} - ${endTime}` : mergedStartTime;
+    }
+    
+    // Calculate new expiration based on event end time
+    if (eventEndDate && (endTime || (mergedStartTime && mergedStartTime.includes('-')))) {
+      let expiresAt;
+      
+      if (endTime && endTime.trim() !== "") {
+        // If end time is provided, use end date + end time
+        const [hours, minutes] = endTime.split(':').map(Number);
+        const endDateTime = new Date(eventEndDate);
+        endDateTime.setHours(hours, minutes, 0, 0);
+        expiresAt = endDateTime;
+      } else if (mergedStartTime && mergedStartTime.includes('-')) {
+        // If time range is provided (e.g., "2:00 PM - 5:00 PM")
+        const timeParts = mergedStartTime.split('-');
+        if (timeParts.length === 2) {
+          const endTimeStr = timeParts[1].trim();
+          // Parse end time (handle both 12-hour and 24-hour format)
+          let endHours, endMinutes;
+          if (endTimeStr.includes('AM') || endTimeStr.includes('PM')) {
+            // 12-hour format
+            const [timePart, period] = endTimeStr.replace(/\s+/g, ' ').split(' ');
+            const [h, m] = timePart.split(':').map(Number);
+            endHours = period === 'AM' ? (h === 12 ? 0 : h) : (h === 12 ? 12 : h + 12);
+            endMinutes = m || 0;
+          } else {
+            // 24-hour format
+            const [h, m] = endTimeStr.split(':').map(Number);
+            endHours = h;
+            endMinutes = m || 0;
+          }
+          const endDateTime = new Date(eventEndDate);
+          endDateTime.setHours(endHours, endMinutes, 0, 0);
+          expiresAt = endDateTime;
+        }
+      }
+      
+      // Ensure expiration is not in the past
+      if (expiresAt) {
+        const now = new Date();
+        if (expiresAt < now) {
+          // If calculated expiration is in the past, set to 24 hours from now
+          expiresAt = new Date(now.getTime() + 24*60*60*1000);
+        }
+        updateData.expiresAt = expiresAt;
+      }
     }
     
     // Handle title field
@@ -6300,29 +6536,21 @@ app.put("/api/event/events/:id", upload.single("image"), async (req, res) => {
   } else if (description) {
       updateData.title = description.substring(0, 50);
   }
-
-    // Persist admin-set registration price if provided
-    if (typeof req.body.registrationPrice !== 'undefined' && req.body.registrationPrice !== null && req.body.registrationPrice !== '') {
-      const priceNum = Number(req.body.registrationPrice);
-      if (!Number.isNaN(priceNum) && priceNum >= 0) {
-        updateData.registrationPrice = priceNum;
+    
+    // Handle registration fee field
+    if (registrationFee !== undefined && registrationFee !== null && registrationFee !== "") {
+      const fee = parseFloat(registrationFee);
+      if (!isNaN(fee) && fee >= 0) {
+        updateData.registrationFee = Math.round(fee * 100); // Convert to cents
       }
     }
-
-    // Optional flags if sent
-    if (typeof req.body.isFeatured !== 'undefined') {
-      updateData.isFeatured = req.body.isFeatured === 'true' || req.body.isFeatured === true;
-    }
-    if (typeof req.body.maxRegistrations !== 'undefined' && req.body.maxRegistrations !== '') {
-      const maxReg = Number(req.body.maxRegistrations);
-      if (!Number.isNaN(maxReg) && maxReg >= 0) {
-        updateData.maxRegistrations = maxReg;
-      }
-  }
     
     if (req.file) updateData.image = req.file.path;
 
+    console.log("Final update data:", updateData);
+    
     const updatedEvent = await Event.findByIdAndUpdate(req.params.id, updateData, { new: true });
+    console.log("Updated event:", updatedEvent);
     res.json({ success: true, data: updatedEvent });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -6347,176 +6575,6 @@ app.get("/api/event/admin/pending", adminAuth, async (req, res) => {
   try {
     const events = await Event.find({ status: "pending" });
     res.json({ success: true, data: events });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// Approve event with price and feature flag
-app.post("/api/event/admin/approve/:id", adminAuth, async (req, res) => {
-  try {
-    const { price, isFeatured, maxRegistrations, message } = req.body;
-    if (price == null || isNaN(Number(price)) || Number(price) < 0) {
-      return res.status(400).json({ success: false, message: "Valid price is required (cents)" });
-    }
-    const update = {
-      status: "verified",
-      registrationPrice: Number(price),
-      isFeatured: !!isFeatured,
-      approvedBy: ADMIN_EMAIL,
-      approvedAt: new Date(),
-      message: message || "",
-    };
-    if (maxRegistrations != null) update.maxRegistrations = Number(maxRegistrations);
-    const updated = await Event.findByIdAndUpdate(req.params.id, update, { new: true });
-    if (!updated) return res.status(404).json({ success: false, message: "Event not found" });
-    res.json({ success: true, data: updated });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// Featured events for homepage (verified only)
-app.get("/api/event/featured", async (req, res) => {
-  try {
-    const now = new Date();
-    const events = await Event.find({
-      status: "verified",
-      isFeatured: true,
-      $or: [
-        { expiresAt: { $exists: false } },
-        { expiresAt: null },
-        { expiresAt: { $gt: now } }
-      ]
-    }).sort({ approvedAt: -1 }).limit(20);
-    res.json({ success: true, data: events });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// Simple event registration endpoint to capture user details before payment
-app.post('/api/event/register', async (req, res) => {
-  try {
-    const { eventId, userId, userName, userEmail, userContact, amount } = req.body;
-    if (!eventId || !userId || !userEmail) {
-      return res.status(400).json({ success: false, message: 'eventId, userId and userEmail are required' });
-    }
-    const event = await Event.findById(eventId);
-    if (!event || event.status !== 'verified') {
-      return res.status(404).json({ success: false, message: 'Event not available for registration' });
-    }
-    const registration = await EventRegistration.create({
-      eventId: event._id,
-      userId,
-      amount: Number(amount ?? event.registrationPrice ?? 0),
-      status: 'pending',
-      currency: 'usd',
-      metadata: { userName, userEmail, userContact }
-    });
-    return res.json({ success: true, registrationId: registration._id });
-  } catch (err) {
-    console.error('Simple register error:', err);
-    return res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// Create registration payment intent (user pays to register)
-app.post('/api/event/:eventId/register/intent', async (req, res) => {
-  try {
-    const { userId, payment_method_id, currency = 'usd' } = req.body;
-    const { eventId } = req.params;
-    if (!userId || !payment_method_id) {
-      return res.status(400).json({ success: false, message: 'userId and payment_method_id are required' });
-    }
-    const event = await Event.findById(eventId);
-    if (!event || event.status !== 'verified') {
-      return res.status(404).json({ success: false, message: 'Event not available for registration' });
-    }
-    if (event.maxRegistrations > 0 && event.registrationsCount >= event.maxRegistrations) {
-      return res.status(409).json({ success: false, message: 'Registrations are full' });
-    }
-    const amount = Number(event.registrationPrice || 0);
-    if (isNaN(amount) || amount < 0) {
-      return res.status(400).json({ success: false, message: 'Invalid event price' });
-    }
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: amount,
-      currency,
-      payment_method: payment_method_id,
-      confirmation_method: 'automatic',
-      confirm: false,
-      metadata: { type: 'event_registration', eventId: eventId, userId: userId }
-    });
-    const reg = await EventRegistration.create({
-      eventId: event._id,
-      userId,
-      amount,
-      currency,
-      status: 'pending',
-      paymentIntentId: paymentIntent.id,
-      metadata: {}
-    });
-    res.json({ success: true, client_secret: paymentIntent.client_secret, registrationId: reg._id });
-  } catch (err) {
-    console.error('Registration intent error:', err);
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// Confirm registration after frontend confirms the payment intent
-app.post('/api/event/:eventId/register/confirm', async (req, res) => {
-  try {
-    const { registrationId, payment_intent_id } = req.body;
-    const { eventId } = req.params;
-    const reg = await EventRegistration.findById(registrationId);
-    if (!reg || reg.eventId.toString() !== eventId) {
-      return res.status(404).json({ success: false, message: 'Registration not found' });
-    }
-    // Fetch intent to check status
-    const intent = await stripe.paymentIntents.retrieve(payment_intent_id || reg.paymentIntentId);
-    if (intent.status === 'succeeded') {
-      if (reg.status !== 'paid') {
-        reg.status = 'paid';
-        await reg.save();
-        await Event.findByIdAndUpdate(eventId, { $inc: { registrationsCount: 1 } });
-      }
-      return res.json({ success: true, status: 'paid' });
-    }
-    if (intent.status === 'requires_payment_method' || intent.status === 'canceled' || intent.status === 'requires_action') {
-      reg.status = 'failed';
-      await reg.save();
-      return res.json({ success: true, status: 'failed' });
-    }
-    res.json({ success: true, status: intent.status });
-  } catch (err) {
-    console.error('Registration confirm error:', err);
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// List registrations for an event (admin)
-app.get('/api/event/:eventId/registrations', adminAuth, async (req, res) => {
-  try {
-    const regs = await EventRegistration.find({ eventId: req.params.eventId }).populate('userId', 'name email');
-    res.json({ success: true, data: regs });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// List registrations for creator (seller or user who owns the event)
-app.get('/api/event/:eventId/registrations/creator', async (req, res) => {
-  try {
-    const event = await Event.findById(req.params.eventId);
-    if (!event) return res.status(404).json({ success: false, message: 'Event not found' });
-    // Simple auth: allow if header has ownerId matching event.userId or event.sellerId
-    const ownerId = req.headers['x-owner-id'];
-    if (!ownerId || (event.userId !== ownerId && event.sellerId !== ownerId && !req.isAdmin)) {
-      return res.status(401).json({ success: false, message: 'Unauthorized' });
-    }
-    const regs = await EventRegistration.find({ eventId: req.params.eventId }).populate('userId', 'name email');
-    res.json({ success: true, data: regs });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -6641,25 +6699,14 @@ app.delete("/api/informationBox/:id", async (req, res) => {
 // POST - create new app
 app.post("/api/apps", upload.single("image"), async (req, res) => {
   try {
-    // Validate required fields
-    if (!req.body.name || !req.body.link) {
-      return res.status(400).json({ error: "Name and link are required" });
-    }
-    
-    // Check if image is provided
-    if (!req.file) {
-      return res.status(400).json({ error: "Image is required" });
-    }
-    
     const newApp = new AppModel({
       name: req.body.name,
       image: req.file.path, // Cloudinary URL
       link: req.body.link
-    });
+  });
     await newApp.save();
     res.json(newApp);
   } catch (err) {
-    console.error("App creation error:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -6688,22 +6735,16 @@ app.get("/api/apps/:id", async (req, res) => {
 // PUT - update app
 app.put("/api/apps/:id", upload.single("image"), async (req, res) => {
   try {
-    // Validate required fields
-    if (!req.body.name || !req.body.link) {
-      return res.status(400).json({ error: "Name and link are required" });
-    }
-    
     const updatedData = {
       name: req.body.name,
       link: req.body.link
-    };
+  };
     if (req.file) updatedData.image = req.file.path;
 
     const updatedApp = await AppModel.findByIdAndUpdate(req.params.id, updatedData, { new: true });
     if (!updatedApp) return res.status(404).json({ message: "App not found" });
     res.json(updatedApp);
   } catch (err) {
-    console.error("App update error:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -6871,8 +6912,7 @@ app.delete("/api/workupload/:sampleId", async (req, res) => {
 });
 
 // Verify Email Code
-// Shared handler for verifying code
-const handleVerifyEmailCode = async (req, res) => {
+app.post("/verify-email-code", async (req, res) => {
   const { email, code } = req.body;
 
   console.log("=== OTP VERIFICATION REQUEST ===");
@@ -6932,11 +6972,7 @@ const handleVerifyEmailCode = async (req, res) => {
       error: err.message 
   });
   }
-};
-
-// Register both legacy and /api routes
-app.post("/verify-email-code", handleVerifyEmailCode);
-app.post("/api/verify-email-code", handleVerifyEmailCode);
+});
 
 // Create Stripe checkout session for subscription (6 months)
 app.post('/create-subscription-checkout-session', async (req, res) => {
@@ -6956,8 +6992,8 @@ app.post('/create-subscription-checkout-session', async (req, res) => {
         },
         quantity: 1,
       }],
-      success_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}?payment_success=true&type=subscription`,
-      cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/payment-cancel`,
+      success_url: `https://asap-nine-pi.vercel.app?payment_success=true&type=subscription`,
+      cancel_url: `${process.env.FRONTEND_URL || 'https://asap-nine-pi.vercel.app'}/#/payment-cancel`,
       client_reference_id: userId,
       customer_email: email,
       metadata: {
@@ -7002,8 +7038,8 @@ app.post('/create-event-checkout-session', async (req, res) => {
         },
         quantity: 1,
       }],
-      success_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/payment-cancel`,
+      success_url: `https://asap-nine-pi.vercel.app/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.FRONTEND_URL || 'https://asap-nine-pi.vercel.app'}/#/payment-cancel`,
       client_reference_id: userId,
       customer_email: email,
       metadata: {
@@ -7047,8 +7083,8 @@ app.post('/create-monthly-subscription-checkout-session', async (req, res) => {
         },
         quantity: 1,
       }],
-      success_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}?payment_success=true&type=monthly_subscription`,
-      cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/payment-cancel`,
+      success_url: `https://asap-nine-pi.vercel.app?payment_success=true&type=monthly_subscription`,
+      cancel_url: `${process.env.FRONTEND_URL || 'https://asap-nine-pi.vercel.app'}/#/payment-cancel`,
       client_reference_id: userId,
       customer_email: email,
       metadata: {
@@ -7177,18 +7213,11 @@ app.post('/confirm-payment-intent', async (req, res) => {
 
 const PORT = process.env.PORT || 8000;
 
-if (!module.parent) {   // ensures it only runs if this file is the entry point
-  const server = app.listen(PORT, () => {
-    console.log(`✅ Server is running on port ${PORT}`);
-  });
-
-  server.on("error", (err) => {
-    if (err.code === "EADDRINUSE") {
-      console.error(`❌ Port ${PORT} is already in use.`);
-      process.exit(1);
-    } else {
-      throw err;
-    }
+// In Vercel serverless, do not start a persistent listener.
+// Start only when running locally (node index.js)
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`✅ Server running locally on port ${PORT}`);
   });
 }
 
@@ -7277,23 +7306,16 @@ app.get("/ratings/seller/:sellerId", async (req, res) => {
       .populate('userId', 'name email')
       .sort({ createdAt: -1 });
 
-    console.log("🔍 Backend - Found ratings for seller:", sellerId, "Count:", ratings.length);
-    console.log("🔍 Backend - Ratings data:", ratings);
-
     // Calculate average rating
     const averageRating = ratings.length > 0 
       ? ratings.reduce((sum, rating) => sum + rating.rating, 0) / ratings.length 
       : 0;
 
-    const responseData = {
+    res.status(200).json({
       ratings,
       averageRating: Math.round(averageRating * 10) / 10, // Round to 1 decimal place
       totalRatings: ratings.length
-    };
-
-    console.log("🔍 Backend - Sending response:", responseData);
-
-    res.status(200).json(responseData);
+    });
   } catch (error) {
     console.error("Error fetching seller ratings:", error);
     res.status(500).json({ message: "Internal Server Error" });
@@ -7351,11 +7373,14 @@ app.delete("/ratings/:ratingId", async (req, res) => {
 });
 
 // Scheduled task to expire ads and events after 24 hours
+const ensureDb = require('./db/conn');
 const expireContentTask = async () => {
   try {
     const now = new Date();
     console.log('=== RUNNING CONTENT EXPIRATION TASK ===');
     console.log('Current time:', now);
+    // Ensure DB is connected before running queries
+    await ensureDb();
     
     // Find ads that have expired (including admin-verified ones)
     const expiredAds = await Ad.find({
@@ -7363,9 +7388,9 @@ const expireContentTask = async () => {
       status: { $in: ['verified', 'pending'] } // Include both verified and pending ads
     });
     
-    // Find events that have expired based on end date (including admin-verified ones)
+    // Find events that have expired (including admin-verified ones)
     const expiredEvents = await Event.find({
-      endDate: { $lte: now },
+      expiresAt: { $lte: now },
       status: { $in: ['verified', 'pending'] } // Include both verified and pending events
     });
     
@@ -7396,7 +7421,7 @@ const expireContentTask = async () => {
       
       const eventResult = await Event.updateMany(
         {
-          endDate: { $lte: now },
+          expiresAt: { $lte: now },
           status: { $in: ['verified', 'pending'] }
         },
         { 
@@ -7419,108 +7444,70 @@ const expireContentTask = async () => {
   }
 };
 
-// Guarded scheduler: run only when DB is connected
-function scheduleExpirationTask() {
-  const runIfConnected = async () => {
-    if (isConnected && isConnected()) {
-      try {
-        await expireContentTask();
-      } catch (e) {
-        console.error('Expiration task run failed:', e);
-      }
-    } else {
-      console.warn('Skipping expiration task: DB not connected');
-    }
-  };
-
-  // Run every hour
-  setInterval(runIfConnected, 60 * 60 * 1000);
-  // Run once at startup after short delay to allow DB connect
-  setTimeout(runIfConnected, 5000);
+// In serverless, avoid background timers. Run only when executed locally.
+if (require.main === module) {
+  // Run the expiration task every hour
+  setInterval(expireContentTask, 60 * 60 * 1000); // 1 hour
+  // Run the task immediately on startup (will skip until DB is ready)
+  expireContentTask();
 }
 
-scheduleExpirationTask();
+// ==================== USER QUERY ENDPOINTS ====================
 
-// ---------------- EVENT EXPIRATION ROUTES ----------------
-
-// Manual event expiration endpoint
-app.post("/api/event/admin/expire-events", async (req, res) => {
+// Submit event contact query
+app.post("/api/event/contact-query", async (req, res) => {
   try {
-    console.log('=== MANUAL EVENT EXPIRATION TRIGGERED ===');
-    await expireContentTask();
-    res.json({ success: true, message: "Event expiration task completed" });
-  } catch (error) {
-    console.error('Error in manual event expiration:', error);
-    res.status(500).json({ success: false, message: "Error expiring events" });
-  }
-});
-
-// Get expired events
-app.get("/api/event/admin/expired", async (req, res) => {
-  try {
-    console.log("Fetching expired events");
-    const expiredEvents = await Event.find({
-      status: 'expired'
-    }).sort({ expiredAt: -1 });
+    const { eventId, eventTitle, name, email, contact, description, type } = req.body;
     
-    res.json({ success: true, data: expiredEvents });
-  } catch (err) {
-    console.error("Error fetching expired events:", err);
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// ---------------- QUERIES ROUTES ----------------
-
-// Add event query
-app.post("/api/queries/add-event-query", async (req, res) => {
-  try {
-    const { name, email, contact, message, eventName, type } = req.body;
-
-    if (!name || !email || !message || !eventName) {
+    // Validate required fields
+    if (!name || !email || !contact || !description) {
       return res.status(400).json({ 
         success: false, 
-        message: "Missing required fields" 
+        message: "Name, email, contact, and description are required" 
       });
     }
-
-    const query = new Query({
+    
+    // Create new user query
+    const userQuery = new UserQuery({
       name,
       email,
-      contact: contact || "",
-      message,
-      eventName,
-      type: type || "event_query"
+      contact,
+      description,
+      type: type || 'event_query',
+      eventId: eventId || null,
+      eventTitle: eventTitle || null,
+      status: 'pending'
     });
-
-    await query.save();
-
-    console.log("Event query saved:", query);
+    
+    await userQuery.save();
+    
     res.json({ 
       success: true, 
-      message: "Query submitted successfully",
-      queryId: query._id
+      message: "Your query has been submitted successfully! We'll get back to you soon.",
+      data: userQuery 
     });
-
-  } catch (err) {
-    console.error("Error saving event query:", err);
+  } catch (error) {
+    console.error("Error submitting event query:", error);
     res.status(500).json({ 
       success: false, 
-      message: "Failed to submit query" 
+      message: "Failed to submit query. Please try again." 
     });
   }
 });
 
-// Get all queries (admin)
-app.get("/api/queries/get-all", async (req, res) => {
+// Get all user queries (admin only)
+app.get("/api/admin/user-queries", async (req, res) => {
   try {
-    const queries = await Query.find().sort({ createdAt: -1 });
+    const queries = await UserQuery.find()
+      .populate('eventId', 'title startDate venue')
+      .sort({ createdAt: -1 });
+    
     res.json({ 
       success: true, 
-      queries 
+      data: queries 
     });
-  } catch (err) {
-    console.error("Error fetching queries:", err);
+  } catch (error) {
+    console.error("Error fetching user queries:", error);
     res.status(500).json({ 
       success: false, 
       message: "Failed to fetch queries" 
@@ -7528,16 +7515,19 @@ app.get("/api/queries/get-all", async (req, res) => {
   }
 });
 
-// Get event queries only (admin)
-app.get("/api/queries/get-event-queries", async (req, res) => {
+// Get event-specific queries
+app.get("/api/admin/event-queries", async (req, res) => {
   try {
-    const queries = await Query.find({ type: "event_query" }).sort({ createdAt: -1 });
+    const queries = await UserQuery.find({ type: 'event_query' })
+      .populate('eventId', 'title startDate venue')
+      .sort({ createdAt: -1 });
+    
     res.json({ 
       success: true, 
-      queries 
+      data: queries 
     });
-  } catch (err) {
-    console.error("Error fetching event queries:", err);
+  } catch (error) {
+    console.error("Error fetching event queries:", error);
     res.status(500).json({ 
       success: false, 
       message: "Failed to fetch event queries" 
@@ -7545,52 +7535,111 @@ app.get("/api/queries/get-event-queries", async (req, res) => {
   }
 });
 
-// Reply to query (admin)
-app.post("/api/queries/reply/:queryId", async (req, res) => {
+// Mark query as responded (admin only)
+app.put("/api/admin/user-queries/:id/respond", async (req, res) => {
   try {
-    const { queryId } = req.params;
-    const { adminReply, repliedBy } = req.body;
-
-    if (!adminReply) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Reply message is required" 
-      });
-    }
-
-    const query = await Query.findByIdAndUpdate(
-      queryId,
+    const { id } = req.params;
+    const { adminResponse, respondedBy } = req.body;
+    
+    const query = await UserQuery.findByIdAndUpdate(
+      id,
       {
-        adminReply,
-        repliedBy: repliedBy || "admin",
-        repliedAt: new Date(),
-        status: "replied"
+        status: 'responded',
+        adminResponse: adminResponse || '',
+        respondedBy: respondedBy || 'Admin',
+        respondedAt: new Date()
       },
       { new: true }
     );
-
+    
     if (!query) {
       return res.status(404).json({ 
         success: false, 
         message: "Query not found" 
       });
     }
-
+    
     res.json({ 
       success: true, 
-      message: "Reply sent successfully",
-      query 
+      message: "Query marked as responded",
+      data: query 
     });
-
-  } catch (err) {
-    console.error("Error replying to query:", err);
+  } catch (error) {
+    console.error("Error updating query:", error);
     res.status(500).json({ 
       success: false, 
-      message: "Failed to send reply" 
+      message: "Failed to update query" 
+    });
+  }
+});
+
+// Delete user query (admin only)
+app.delete("/api/admin/user-queries/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const query = await UserQuery.findByIdAndDelete(id);
+    
+    if (!query) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "Query not found" 
+      });
+    }
+    
+    res.json({ 
+      success: true, 
+      message: "Query deleted successfully" 
+    });
+  } catch (error) {
+    console.error("Error deleting query:", error);
+    res.status(500).json({ 
+      success: false, 
+      message: "Failed to delete query" 
+    });
+  }
+});
+
+// ==================== SELLER INFO ENDPOINT ====================
+
+// Get seller registration information
+app.get("/api/seller-info/:sellerId", async (req, res) => {
+  try {
+    const { sellerId } = req.params;
+    
+    if (!sellerId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Seller ID is required" 
+      });
+    }
+    
+    // Find seller with populated references
+    const seller = await Seller.findById(sellerId)
+      .populate('category', 'Title name')
+      .populate('product', 'Title name')
+      .populate('subproduct', 'Title name')
+      .select('-password -resetTokens'); // Exclude sensitive data
+    
+    if (!seller) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "Seller not found" 
+      });
+    }
+    
+    res.json({ 
+      success: true, 
+      data: seller 
+    });
+  } catch (error) {
+    console.error("Error fetching seller info:", error);
+    res.status(500).json({ 
+      success: false, 
+      message: "Failed to fetch seller information" 
     });
   }
 });
 
 // Export for Vercel
 module.exports = app;
-
